@@ -20,13 +20,13 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "model_path",
-                default_value="/home/auv/models/buoy.pt",
+                default_value="/home/pc/Downloads/yolo26m_underwater_batch4_last.pt",
                 description="Ultralytics YOLO .pt model path. Replace with the trained buoy model path.",
             ),
             DeclareLaunchArgument(
                 "target_class_name",
-                default_value="buoy",
-                description="Target class name. Set empty string to accept every class when target_class_id < 0.",
+                default_value="",
+                description="Target class name. Leave empty to accept every detected class.",
             ),
             DeclareLaunchArgument(
                 "target_class_id",
@@ -34,8 +34,22 @@ def generate_launch_description():
                 description="Target class id. Overrides target_class_name when >= 0.",
             ),
             DeclareLaunchArgument("confidence_threshold", default_value="0.35"),
-            DeclareLaunchArgument("device", default_value="cuda:0"),
+            DeclareLaunchArgument(
+                "device",
+                default_value="auto",
+                description="Inference device: auto, cpu, cuda:0, etc.",
+            ),
             DeclareLaunchArgument("imgsz", default_value="640"),
+            DeclareLaunchArgument(
+                "show_preview",
+                default_value="true",
+                description="Show OpenCV preview window with live detections.",
+            ),
+            DeclareLaunchArgument(
+                "preview_window_name",
+                default_value="YOLO Buoy Detection",
+                description="OpenCV window title for the preview UI.",
+            ),
             Node(
                 package="auv_buoy_vision_control",
                 executable="yolo_buoy_detector",
@@ -54,6 +68,8 @@ def generate_launch_description():
                         ),
                         "device": LaunchConfiguration("device"),
                         "imgsz": ParameterValue(LaunchConfiguration("imgsz"), value_type=int),
+                        "show_preview": ParameterValue(LaunchConfiguration("show_preview"), value_type=bool),
+                        "preview_window_name": LaunchConfiguration("preview_window_name"),
                     }
                 ],
             ),
