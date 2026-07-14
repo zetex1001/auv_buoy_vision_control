@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import importlib
+import os
 import time
 from typing import Optional, Tuple
 
@@ -32,10 +33,16 @@ class YoloBuoyDetector(Node):
         self.declare_parameter("imgsz", 640)
         self.declare_parameter("show_preview", True)
         self.declare_parameter("preview_window_name", "YOLO Buoy Detection")
+        self.declare_parameter("publish_per_class", False)
 
         self.image_topic = self.get_parameter("image_topic").value
         self.bbox_topic = self.get_parameter("bbox_topic").value
         self.model_path = self.get_parameter("model_path").value
+        if not self.model_path or not os.path.isfile(self.model_path):
+            raise FileNotFoundError(
+                f"model_path not found: {self.model_path!r}. "
+                "Pass model_path:=/absolute/path/to/model.pt"
+            )
         self.target_class_id = int(self.get_parameter("target_class_id").value)
         self.target_class_name = str(self.get_parameter("target_class_name").value).strip().lower()
         self.confidence_threshold = float(self.get_parameter("confidence_threshold").value)
@@ -43,6 +50,7 @@ class YoloBuoyDetector(Node):
         self.imgsz = int(self.get_parameter("imgsz").value)
         self.show_preview = bool(self.get_parameter("show_preview").value)
         self.preview_window_name = str(self.get_parameter("preview_window_name").value)
+        self.publish_per_class = bool(self.get_parameter("publish_per_class").value)
         self._preview_prev_time: Optional[float] = None
         self._preview_fps = 0.0
 
@@ -70,7 +78,7 @@ class YoloBuoyDetector(Node):
         self.get_logger().info(
             f"YOLO PT model={self.model_path}, device={self.device}, imgsz={self.imgsz}, "
             f"target_class_id={self.target_class_id}, target_class_name='{self.target_class_name}', "
-            f"show_preview={self.show_preview}"
+            f"show_preview={self.show_preview}, publish_per_class={self.publish_per_class}"
         )
         if self.show_preview:
             self.get_logger().info(
@@ -129,36 +137,17 @@ class YoloBuoyDetector(Node):
         detection, all_detections = self._detect_targets(image)
         stamp_sec = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
 
-        out = Float32MultiArray()
-        if detection is None:
-            out.data = [
-                stamp_sec,
-                0.0,
-                -1.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                0.0,
-                float(image_width),
-                float(image_height),
-            ]
-        else:
-            class_id, confidence, center_x, center_y, width, height = detection
-            out.data = [
-                stamp_sec,
-                1.0,
-                float(class_id),
-                float(confidence),
-                float(center_x),
-                float(center_y),
-                float(width),
-                float(height),
-                float(image_width),
-                float(image_height),
-            ]
+        published_detections = [detection] if detection is not None else []
+        if self.publish_per_class:
+            published_detections = self._best_detection_per_class(all_detections)
 
-        self.bbox_pub.publish(out)
+        if published_detections:
+            for published_detection in published_detections:
+                self._publish_detection(
+                    stamp_sec, published_detection, image_width, image_height
+                )
+        else:
+            self._publish_detection(stamp_sec, None, image_width, image_height)
 
         if self.show_preview:
             self._show_preview(image, detection, all_detections)
@@ -166,6 +155,48 @@ class YoloBuoyDetector(Node):
     def _decode_compressed_image(self, msg: CompressedImage) -> Optional[np.ndarray]:
         data = np.frombuffer(msg.data, dtype=np.uint8)
         return cv2.imdecode(data, cv2.IMREAD_COLOR)
+
+    def _best_detection_per_class(
+        self,
+        all_detections: list[Tuple[int, float, float, float, float, float, int, int, int, int]],
+    ) -> list[Tuple[int, float, float, float, float, float]]:
+        best_by_class: dict[int, Tuple[int, float, float, float, float, float]] = {}
+        for class_id, confidence, center_x, center_y, width, height, *_ in all_detections:
+            if not self._class_matches(class_id):
+                continue
+            previous = best_by_class.get(class_id)
+            if previous is None or confidence > previous[1]:
+                best_by_class[class_id] = (
+                    class_id,
+                    confidence,
+                    center_x,
+                    center_y,
+                    width,
+                    height,
+                )
+        return [best_by_class[class_id] for class_id in sorted(best_by_class)]
+
+    def _publish_detection(
+        self,
+        stamp_sec: float,
+        detection: Optional[Tuple[int, float, float, float, float, float]],
+        image_width: int,
+        image_height: int,
+    ) -> None:
+        out = Float32MultiArray()
+        if detection is None:
+            out.data = [
+                stamp_sec, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                float(image_width), float(image_height),
+            ]
+        else:
+            class_id, confidence, center_x, center_y, width, height = detection
+            out.data = [
+                stamp_sec, 1.0, float(class_id), float(confidence),
+                float(center_x), float(center_y), float(width), float(height),
+                float(image_width), float(image_height),
+            ]
+        self.bbox_pub.publish(out)
 
     def _detect_targets(
         self, image: np.ndarray
@@ -382,7 +413,8 @@ def main(args=None) -> None:
     finally:
         node.close_preview()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":

@@ -114,32 +114,99 @@ ros2 launch auv_buoy_vision_control laptop_yolo_detection.launch.py \
 
 노트북에서 CUDA를 사용할 수 없으면 `device:=cpu`로 바꾸면 됩니다.
 
-## AUV NUC에서 컨트롤러 실행
+## AUV NUC에서 상태머신 컨트롤러 실행
 
-먼저 QGC 또는 MAVLink 콘솔에서 실제 RC 채널 매핑을 확인합니다. 그 다음 컨트롤러를 실행합니다.
+기본 launch는 `mission_state_machine_node`를 실행합니다. 이 노드는 다음 임무 흐름을 관리합니다.
+
+```text
+IDLE -> DIVE -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
+     -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
+     -> SEARCH/AREA_VERIFY -> ASCEND -> COMPLETE
+```
+
+상태머신에는 다음 입력이 필요합니다.
+
+```text
+/vision/buoy_bbox          std_msgs/msg/Float32MultiArray
+/auv/depth                 std_msgs/msg/Float64 (미터, 수면 0, 아래 방향 양수)
+/depth/pose                geometry_msgs/msg/PoseWithCovarianceStamped (선택 입력)
+/mission/control_enable    std_msgs/msg/Bool
+```
+
+`/depth/pose`를 사용할 때는 기본적으로 `depth = -pose.position.z`로 변환합니다. 좌표계가 다른 센서는 `depth_pose_scale`과 `depth_pose_offset_m`을 조정해야 합니다. `depth_pose_topic:=`처럼 빈 값으로 실행하면 Pose 입력을 끌 수 있습니다. 실제 센서의 부호와 단위를 확인하기 전에는 자동제어를 활성화하지 마십시오.
+
+먼저 QGC 또는 MAVLink 콘솔에서 실제 RC 채널 매핑과 PWM 방향을 확인한 다음 실행합니다.
 
 ```bash
 ros2 launch auv_buoy_vision_control auv_bbox_controller.launch.py \
   bbox_topic:=/vision/buoy_bbox \
+  depth_pose_topic:=/depth/pose \
+  depth_pose_scale:=-1.0 \
   rc_override_topic:=/mavros/rc/override \
-  throttle_channel:=3 \
-  yaw_channel:=4 \
-  forward_channel:=5
+  work_depth_m:=9.5 \
+  surface_depth_m:=0.4 \
+  max_depth_m:=10.5 \
+  buoy_class_id:=0 \
+  stick_class_id:=1
 ```
 
-자주 조정할 파라미터:
+노드는 안전을 위해 `IDLE` 및 RC release 상태로 시작합니다. 카메라, 수심, MAVROS, PWM 방향을 확인한 후 별도 터미널에서 활성화합니다.
 
 ```bash
+ros2 topic pub --once /mission/control_enable std_msgs/msg/Bool "{data: true}"
+```
+
+즉시 비활성화하고 조종권을 반환하려면 다음 명령을 사용합니다.
+
+```bash
+ros2 topic pub --once /mission/control_enable std_msgs/msg/Bool "{data: false}"
+```
+
+현재 상태 확인:
+
+```bash
+ros2 topic echo /mission/state
+```
+
+포크의 영상상 목표 위치는 화면 정규화 좌표입니다. `(0.5, 0.5)`는 화면 중앙이며 실제 카메라와 포크의 위치 차이를 수조 시험으로 보정해야 합니다.
+
+```bash
+fork_target_x:=0.5
+fork_target_y:=0.55
+```
+
+삽입, 자석 분리 및 후진 동작은 시간 기반 PWM 펄스로 시작하도록 구현되어 있습니다. 아래 값은 실제 기체 시험 전 반드시 낮은 추력부터 조정해야 합니다.
+
+```bash
+insert_pwm:=1560 insert_duration_sec:=0.8
+detach_pwm:=1620 detach_duration_sec:=0.3
+backoff_pwm:=1420 backoff_duration_sec:=0.5
+```
+
+상태머신에서 buoy와 stick을 동시에 갱신하려면 YOLO launch에 `publish_per_class:=true`를 지정합니다.
+
+```bash
+ros2 launch auv_buoy_vision_control laptop_yolo_detection.launch.py \
+  model_path:=/home/pc/Downloads/best.pt \
+  device:=cpu \
+  show_preview:=false \
+  publish_per_class:=true
+```
+
+`publish_per_class`는 클래스별 최고 confidence bbox를 한 프레임에 각각 발행합니다. 여러 부표와 각 stick의 공간적 연결까지 처리하려면 이후 detection array 메시지로 확장해야 합니다. 현재 `VERIFY_RELEASE`는 부표가 일정 시간 보이지 않는 것을 임시 성공 조건으로 사용하므로 실기체용 최종 성공 판정은 아닙니다.
+
+상태머신에서 자주 조정할 제어 파라미터:
+
+```bash
+min_pwm:=1300
+max_pwm:=1700
 yaw_invert:=true
 vertical_positive_is_up:=false
 max_yaw_delta:=180
-max_throttle_delta:=100
 forward_pwm:=1560
-lost_behavior:=neutral
 ```
 
-`lost_behavior:=neutral`은 부표가 검출되지 않을 때 throttle/yaw/forward를 1500으로 유지합니다.
-`lost_behavior:=release`는 해당 채널에 `CHAN_RELEASE=0`을 보냅니다.
+상태머신 노드는 계산된 모든 추진기 PWM을 `1300~1700` 범위로 제한합니다. launch에서 더 좁은 범위는 지정할 수 있지만 `1300~1700` 바깥으로 확장하면 노드가 실행을 거부합니다. `CHAN_RELEASE=0`과 `CHAN_NOCHANGE=65535`는 추진기 PWM이 아닌 MAVROS 제어용 특수값이므로 이 제한을 적용하지 않습니다.
 
 ## 확인 명령어
 

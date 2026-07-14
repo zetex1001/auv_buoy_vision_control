@@ -20,8 +20,8 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "model_path",
-                default_value="/home/pc/Downloads/yolo26m_underwater_batch4_last.pt",
-                description="Ultralytics YOLO .pt model path. Replace with the trained buoy model path.",
+                default_value="",
+                description="Required .pt model path. Example: /home/user/models/yolo26m_underwater_batch4_last.pt",
             ),
             DeclareLaunchArgument(
                 "target_class_name",
@@ -50,6 +50,11 @@ def generate_launch_description():
                 default_value="YOLO Buoy Detection",
                 description="OpenCV window title for the preview UI.",
             ),
+            DeclareLaunchArgument(
+                "publish_per_class",
+                default_value="false",
+                description="Publish the best detection for every visible class in each frame.",
+            ),
             Node(
                 package="auv_buoy_vision_control",
                 executable="yolo_buoy_detector",
@@ -70,6 +75,9 @@ def generate_launch_description():
                         "imgsz": ParameterValue(LaunchConfiguration("imgsz"), value_type=int),
                         "show_preview": ParameterValue(LaunchConfiguration("show_preview"), value_type=bool),
                         "preview_window_name": LaunchConfiguration("preview_window_name"),
+                        "publish_per_class": ParameterValue(
+                            LaunchConfiguration("publish_per_class"), value_type=bool
+                        ),
                     }
                 ],
             ),

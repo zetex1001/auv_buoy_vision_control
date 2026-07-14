@@ -6,6 +6,7 @@
 #include <functional>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -33,8 +34,8 @@ public:
     lateral_channel_ = declare_parameter<int>("lateral_channel", 6);
 
     neutral_pwm_ = declare_parameter<int>("neutral_pwm", 1500);
-    min_pwm_ = declare_parameter<int>("min_pwm", 1100);
-    max_pwm_ = declare_parameter<int>("max_pwm", 1900);
+    min_pwm_ = declare_parameter<int>("min_pwm", 1300);
+    max_pwm_ = declare_parameter<int>("max_pwm", 1700);
     max_yaw_delta_ = declare_parameter<int>("max_yaw_delta", 250);
     max_throttle_delta_ = declare_parameter<int>("max_throttle_delta", 150);
     forward_pwm_ = declare_parameter<int>("forward_pwm", 1600);
@@ -42,6 +43,14 @@ public:
     aligned_deadband_y_ = declare_parameter<double>("aligned_deadband_y", 0.18);
     yaw_invert_ = declare_parameter<bool>("yaw_invert", false);
     vertical_positive_is_up_ = declare_parameter<bool>("vertical_positive_is_up", true);
+
+    if (
+      min_pwm_ < 1300 || max_pwm_ > 1700 || min_pwm_ >= max_pwm_ ||
+      neutral_pwm_ < min_pwm_ || neutral_pwm_ > max_pwm_)
+    {
+      throw std::invalid_argument(
+              "Thruster PWM range must stay within 1300..1700 and include neutral_pwm");
+    }
 
     bbox_sub_ = create_subscription<std_msgs::msg::Float32MultiArray>(
       bbox_topic_, 10,
@@ -205,8 +214,8 @@ private:
   int lateral_channel_{6};
 
   int neutral_pwm_{1500};
-  int min_pwm_{1100};
-  int max_pwm_{1900};
+  int min_pwm_{1300};
+  int max_pwm_{1700};
   int max_yaw_delta_{250};
   int max_throttle_delta_{150};
   int forward_pwm_{1600};
