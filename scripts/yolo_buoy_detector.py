@@ -25,6 +25,11 @@ class YoloBuoyDetector(Node):
 
         self.declare_parameter("image_topic", "/camera/camera/color/image_raw/compressed")
         self.declare_parameter("bbox_topic", "/vision/buoy_bbox")
+        self.declare_parameter(
+            "annotated_image_topic", "/vision/yolo/annotated/compressed"
+        )
+        self.declare_parameter("publish_annotated_image", True)
+        self.declare_parameter("annotated_jpeg_quality", 80)
         self.declare_parameter("model_path", "/home/auv/models/buoy.pt")
         self.declare_parameter("target_class_id", -1)
         self.declare_parameter("target_class_name", "")
@@ -37,6 +42,17 @@ class YoloBuoyDetector(Node):
 
         self.image_topic = self.get_parameter("image_topic").value
         self.bbox_topic = self.get_parameter("bbox_topic").value
+        self.annotated_image_topic = str(
+            self.get_parameter("annotated_image_topic").value
+        )
+        self.publish_annotated_image = bool(
+            self.get_parameter("publish_annotated_image").value
+        )
+        self.annotated_jpeg_quality = int(
+            self.get_parameter("annotated_jpeg_quality").value
+        )
+        if not 1 <= self.annotated_jpeg_quality <= 100:
+            raise ValueError("annotated_jpeg_quality must be between 1 and 100")
         self.model_path = self.get_parameter("model_path").value
         if not self.model_path or not os.path.isfile(self.model_path):
             raise FileNotFoundError(
@@ -71,9 +87,17 @@ class YoloBuoyDetector(Node):
             image_qos,
         )
         self.bbox_pub = self.create_publisher(Float32MultiArray, self.bbox_topic, 10)
+        self.annotated_image_pub = self.create_publisher(
+            CompressedImage, self.annotated_image_topic, image_qos
+        )
 
         self.get_logger().info(f"Subscribing: {self.image_topic}")
         self.get_logger().info(f"Publishing: {self.bbox_topic} ({BBOX_FORMAT})")
+        if self.publish_annotated_image:
+            self.get_logger().info(
+                f"Publishing annotated JPEG: {self.annotated_image_topic} "
+                f"(quality={self.annotated_jpeg_quality})"
+            )
         self.get_logger().info(f"Model classes: {self._format_class_names()}")
         self.get_logger().info(
             f"YOLO PT model={self.model_path}, device={self.device}, imgsz={self.imgsz}, "
@@ -149,8 +173,15 @@ class YoloBuoyDetector(Node):
         else:
             self._publish_detection(stamp_sec, None, image_width, image_height)
 
-        if self.show_preview:
-            self._show_preview(image, detection, all_detections)
+        if self.publish_annotated_image or self.show_preview:
+            self._update_preview_fps()
+            annotated_image = self._render_annotated_image(
+                image, detection, all_detections
+            )
+            if self.publish_annotated_image:
+                self._publish_annotated_image(msg, annotated_image)
+            if self.show_preview:
+                self._show_preview(annotated_image)
 
     def _decode_compressed_image(self, msg: CompressedImage) -> Optional[np.ndarray]:
         data = np.frombuffer(msg.data, dtype=np.uint8)
@@ -282,13 +313,12 @@ class YoloBuoyDetector(Node):
                 self._preview_fps = 1.0 / dt
         self._preview_prev_time = now
 
-    def _show_preview(
+    def _render_annotated_image(
         self,
         image: np.ndarray,
         detection: Optional[Tuple[int, float, float, float, float, float]],
         all_detections: list[Tuple[int, float, float, float, float, float, int, int, int, int]],
-    ) -> None:
-        self._update_preview_fps()
+    ) -> np.ndarray:
         display = image.copy()
         height, width = display.shape[:2]
         center_x = width // 2
@@ -394,6 +424,29 @@ class YoloBuoyDetector(Node):
             cv2.LINE_AA,
         )
 
+        return display
+
+    def _publish_annotated_image(
+        self, source_msg: CompressedImage, image: np.ndarray
+    ) -> None:
+        success, encoded = cv2.imencode(
+            ".jpg",
+            image,
+            [cv2.IMWRITE_JPEG_QUALITY, self.annotated_jpeg_quality],
+        )
+        if not success:
+            self.get_logger().warning(
+                "Failed to encode annotated image", throttle_duration_sec=2.0
+            )
+            return
+
+        out = CompressedImage()
+        out.header = source_msg.header
+        out.format = "jpeg"
+        out.data = encoded.tobytes()
+        self.annotated_image_pub.publish(out)
+
+    def _show_preview(self, display: np.ndarray) -> None:
         cv2.imshow(self.preview_window_name, display)
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             raise KeyboardInterrupt("Preview window closed by user")

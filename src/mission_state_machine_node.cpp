@@ -32,6 +32,8 @@ public:
     state_topic_ = declare_parameter<std::string>("state_topic", "/mission/state");
     rc_override_topic_ =
       declare_parameter<std::string>("rc_override_topic", "/mavros/rc/override");
+    rc_monitor_topic_ =
+      declare_parameter<std::string>("rc_monitor_topic", "/mission/rc_command");
 
     control_rate_hz_ = declare_parameter<double>("control_rate_hz", 20.0);
     detection_timeout_sec_ = declare_parameter<double>("detection_timeout_sec", 0.7);
@@ -94,6 +96,7 @@ public:
     enable_sub_ = create_subscription<std_msgs::msg::Bool>(
       enable_topic_, 10, std::bind(&MissionStateMachineNode::on_enable, this, std::placeholders::_1));
     rc_pub_ = create_publisher<mavros_msgs::msg::OverrideRCIn>(rc_override_topic_, 10);
+    rc_monitor_pub_ = create_publisher<mavros_msgs::msg::OverrideRCIn>(rc_monitor_topic_, 10);
     state_pub_ = create_publisher<std_msgs::msg::String>(
       state_topic_, rclcpp::QoS(1).reliable().transient_local());
 
@@ -106,9 +109,10 @@ public:
     publish_state();
     RCLCPP_INFO(
       get_logger(),
-      "Mission state machine ready; enable=%s depth=%s depth_pose=%s bbox=%s state=%s",
+      "Mission state machine ready; enable=%s depth=%s depth_pose=%s bbox=%s state=%s "
+      "rc_output=%s rc_monitor=%s",
       enable_topic_.c_str(), depth_topic_.c_str(), depth_pose_topic_.c_str(), bbox_topic_.c_str(),
-      state_topic_.c_str());
+      state_topic_.c_str(), rc_override_topic_.c_str(), rc_monitor_topic_.c_str());
     RCLCPP_WARN(
       get_logger(),
       "Control starts disabled. Publish std_msgs/Bool true to %s after pre-flight checks.",
@@ -598,6 +602,7 @@ private:
     mavros_msgs::msg::OverrideRCIn msg;
     msg.channels = channels;
     rc_pub_->publish(msg);
+    rc_monitor_pub_->publish(msg);
   }
 
   std::string bbox_topic_;
@@ -608,6 +613,7 @@ private:
   std::string enable_topic_;
   std::string state_topic_;
   std::string rc_override_topic_;
+  std::string rc_monitor_topic_;
   double control_rate_hz_{20.0};
   double detection_timeout_sec_{0.7};
   double depth_timeout_sec_{1.0};
@@ -666,6 +672,7 @@ private:
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr depth_pose_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_sub_;
   rclcpp::Publisher<mavros_msgs::msg::OverrideRCIn>::SharedPtr rc_pub_;
+  rclcpp::Publisher<mavros_msgs::msg::OverrideRCIn>::SharedPtr rc_monitor_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

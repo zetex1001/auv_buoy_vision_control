@@ -19,6 +19,17 @@ def generate_launch_description():
                 description="BBox topic published back to the AUV NUC.",
             ),
             DeclareLaunchArgument(
+                "annotated_image_topic",
+                default_value="/vision/yolo/annotated/compressed",
+                description="Compressed image topic rendered from the completed YOLO inference frame.",
+            ),
+            DeclareLaunchArgument(
+                "publish_annotated_image",
+                default_value="true",
+                description="Publish the completed YOLO inference frame with overlays.",
+            ),
+            DeclareLaunchArgument("annotated_jpeg_quality", default_value="80"),
+            DeclareLaunchArgument(
                 "model_path",
                 default_value="",
                 description="Required .pt model path. Example: /home/user/models/yolo26m_underwater_batch4_last.pt",
@@ -64,6 +75,15 @@ def generate_launch_description():
                     {
                         "image_topic": LaunchConfiguration("image_topic"),
                         "bbox_topic": LaunchConfiguration("bbox_topic"),
+                        "annotated_image_topic": LaunchConfiguration(
+                            "annotated_image_topic"
+                        ),
+                        "publish_annotated_image": ParameterValue(
+                            LaunchConfiguration("publish_annotated_image"), value_type=bool
+                        ),
+                        "annotated_jpeg_quality": ParameterValue(
+                            LaunchConfiguration("annotated_jpeg_quality"), value_type=int
+                        ),
                         "model_path": LaunchConfiguration("model_path"),
                         "target_class_name": LaunchConfiguration("target_class_name"),
                         "target_class_id": ParameterValue(LaunchConfiguration("target_class_id"), value_type=int),

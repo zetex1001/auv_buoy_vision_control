@@ -16,6 +16,7 @@ def generate_launch_description():
             DeclareLaunchArgument("enable_topic", default_value="/mission/control_enable"),
             DeclareLaunchArgument("state_topic", default_value="/mission/state"),
             DeclareLaunchArgument("rc_override_topic", default_value="/mavros/rc/override"),
+            DeclareLaunchArgument("rc_monitor_topic", default_value="/mission/rc_command"),
             DeclareLaunchArgument("control_rate_hz", default_value="20.0"),
             DeclareLaunchArgument("throttle_channel", default_value="3"),
             DeclareLaunchArgument("yaw_channel", default_value="4"),
@@ -73,6 +74,7 @@ def generate_launch_description():
                         "enable_topic": LaunchConfiguration("enable_topic"),
                         "state_topic": LaunchConfiguration("state_topic"),
                         "rc_override_topic": LaunchConfiguration("rc_override_topic"),
+                        "rc_monitor_topic": LaunchConfiguration("rc_monitor_topic"),
                         "control_rate_hz": ParameterValue(
                             LaunchConfiguration("control_rate_hz"), value_type=float
                         ),

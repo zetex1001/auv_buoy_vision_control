@@ -54,6 +54,10 @@ data = [
 mavros_msgs/msg/OverrideRCIn
 ```
 
+상태머신이 계산해 `/mavros/rc/override`로 보내는 동일한 18채널 명령은 웹
+모니터링 전용 `/mission/rc_command`에도 발행됩니다. 이 전용 토픽을 사용하면
+조이스틱이나 다른 노드가 공유 override 토픽에 발행한 값과 섞이지 않습니다.
+
 기본 RC 채널 매핑은 ArduSub 기준입니다.
 
 ```text
@@ -191,6 +195,21 @@ ros2 launch auv_buoy_vision_control laptop_yolo_detection.launch.py \
   device:=cpu \
   show_preview:=false \
   publish_per_class:=true
+```
+
+추론이 끝난 동일 프레임에 bbox와 상태 정보를 그린 JPEG는 다음 토픽으로 발행됩니다. 웹 모니터링에서는 원본 카메라와 bbox를 따로 합성하지 않고 이 토픽을 직접 사용합니다.
+
+```bash
+ros2 topic hz /vision/yolo/annotated/compressed
+ros2 run rqt_image_view rqt_image_view /vision/yolo/annotated/compressed
+```
+
+토픽과 JPEG 품질은 launch 인자로 변경할 수 있습니다.
+
+```bash
+annotated_image_topic:=/vision/yolo/annotated/compressed
+publish_annotated_image:=true
+annotated_jpeg_quality:=80
 ```
 
 `publish_per_class`는 클래스별 최고 confidence bbox를 한 프레임에 각각 발행합니다. 여러 부표와 각 stick의 공간적 연결까지 처리하려면 이후 detection array 메시지로 확장해야 합니다. 현재 `VERIFY_RELEASE`는 부표가 일정 시간 보이지 않는 것을 임시 성공 조건으로 사용하므로 실기체용 최종 성공 판정은 아닙니다.
