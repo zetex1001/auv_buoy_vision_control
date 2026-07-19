@@ -38,7 +38,10 @@ class YoloBuoyDetector(Node):
         self.declare_parameter("imgsz", 640)
         self.declare_parameter("show_preview", True)
         self.declare_parameter("preview_window_name", "YOLO Buoy Detection")
-        self.declare_parameter("publish_per_class", False)
+        self.declare_parameter("publish_per_class", True)
+        # 다중 부표 선택: 면적 큰 것 → 박스 확률(confidence) → 이미지 오른쪽
+        self.declare_parameter("area_similar_ratio", 0.15)
+        self.declare_parameter("confidence_similar_delta", 0.05)
 
         self.image_topic = self.get_parameter("image_topic").value
         self.bbox_topic = self.get_parameter("bbox_topic").value
@@ -67,6 +70,10 @@ class YoloBuoyDetector(Node):
         self.show_preview = bool(self.get_parameter("show_preview").value)
         self.preview_window_name = str(self.get_parameter("preview_window_name").value)
         self.publish_per_class = bool(self.get_parameter("publish_per_class").value)
+        self.area_similar_ratio = float(self.get_parameter("area_similar_ratio").value)
+        self.confidence_similar_delta = float(
+            self.get_parameter("confidence_similar_delta").value
+        )
         self._preview_prev_time: Optional[float] = None
         self._preview_fps = 0.0
 
@@ -187,6 +194,23 @@ class YoloBuoyDetector(Node):
         data = np.frombuffer(msg.data, dtype=np.uint8)
         return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
+    def _is_better_detection(
+        self,
+        candidate: Tuple[int, float, float, float, float, float],
+        current: Tuple[int, float, float, float, float, float],
+    ) -> bool:
+        """면적 큰 것 → 박스 확률(confidence) → 이미지 오른쪽(center_x) 순으로 비교."""
+        _, cand_conf, cand_cx, _, cand_w, cand_h = candidate
+        _, cur_conf, cur_cx, _, cur_w, cur_h = current
+        cand_area = max(0.0, cand_w * cand_h)
+        cur_area = max(0.0, cur_w * cur_h)
+        larger = max(cand_area, cur_area, 1.0)
+        if abs(cand_area - cur_area) > self.area_similar_ratio * larger:
+            return cand_area > cur_area
+        if abs(cand_conf - cur_conf) > self.confidence_similar_delta:
+            return cand_conf > cur_conf
+        return cand_cx > cur_cx
+
     def _best_detection_per_class(
         self,
         all_detections: list[Tuple[int, float, float, float, float, float, int, int, int, int]],
@@ -195,16 +219,17 @@ class YoloBuoyDetector(Node):
         for class_id, confidence, center_x, center_y, width, height, *_ in all_detections:
             if not self._class_matches(class_id):
                 continue
+            candidate = (
+                class_id,
+                confidence,
+                center_x,
+                center_y,
+                width,
+                height,
+            )
             previous = best_by_class.get(class_id)
-            if previous is None or confidence > previous[1]:
-                best_by_class[class_id] = (
-                    class_id,
-                    confidence,
-                    center_x,
-                    center_y,
-                    width,
-                    height,
-                )
+            if previous is None or self._is_better_detection(candidate, previous):
+                best_by_class[class_id] = candidate
         return [best_by_class[class_id] for class_id in sorted(best_by_class)]
 
     def _publish_detection(
@@ -255,7 +280,6 @@ class YoloBuoyDetector(Node):
 
         all_detections: list[Tuple[int, float, float, float, float, float, int, int, int, int]] = []
         best = None
-        best_confidence = -1.0
         filtered_count = 0
         for rect, confidence, class_id in zip(xyxy, confidences, classes):
             x1, y1, x2, y2 = rect
@@ -281,11 +305,16 @@ class YoloBuoyDetector(Node):
             if not self._class_matches(int(class_id)):
                 filtered_count += 1
                 continue
-            if confidence <= best_confidence:
-                continue
-
-            best = (int(class_id), float(confidence), center_x, center_y, width, height)
-            best_confidence = float(confidence)
+            candidate = (
+                int(class_id),
+                float(confidence),
+                center_x,
+                center_y,
+                width,
+                height,
+            )
+            if best is None or self._is_better_detection(candidate, best):
+                best = candidate
 
         if all_detections and best is None:
             self.get_logger().warning(

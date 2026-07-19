@@ -63,7 +63,7 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "publish_per_class",
-                default_value="false",
+                default_value="true",
                 description="Publish the best detection for every visible class in each frame.",
             ),
             Node(

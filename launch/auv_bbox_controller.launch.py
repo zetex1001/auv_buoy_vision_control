@@ -32,18 +32,29 @@ def generate_launch_description():
                 default_value="1700",
                 description="Maximum thruster PWM command.",
             ),
-            DeclareLaunchArgument("max_yaw_delta", default_value="250"),
-            DeclareLaunchArgument("forward_pwm", default_value="1600"),
+            # 아래 기본값은 mission_state_machine_node.cpp declare_parameter 와 동기화
+            DeclareLaunchArgument("max_yaw_delta", default_value="180"),
+            DeclareLaunchArgument(
+                "forward_pwm",
+                default_value="1700",
+                description="Maps to approach_forward_pwm (max approach forward).",
+            ),
+            DeclareLaunchArgument("approach_forward_min_pwm", default_value="1560"),
+            DeclareLaunchArgument("search_yaw_pwm", default_value="1600"),
             DeclareLaunchArgument("yaw_invert", default_value="false"),
             DeclareLaunchArgument("vertical_positive_is_up", default_value="true"),
             DeclareLaunchArgument("work_depth_m", default_value="9.5"),
             DeclareLaunchArgument("surface_depth_m", default_value="0.4"),
             DeclareLaunchArgument("max_depth_m", default_value="10.5"),
+            DeclareLaunchArgument("buoyancy_hold_delta_pwm", default_value="40"),
+            DeclareLaunchArgument("lpf_tau_sec", default_value="0.3"),
             DeclareLaunchArgument("buoy_class_id", default_value="0"),
             DeclareLaunchArgument("stick_class_id", default_value="1"),
-            DeclareLaunchArgument("approach_area_ratio", default_value="0.12"),
-            DeclareLaunchArgument("fork_target_x", default_value="0.5"),
-            DeclareLaunchArgument("fork_target_y", default_value="0.5"),
+            DeclareLaunchArgument("min_detection_hits", default_value="5"),
+            DeclareLaunchArgument("approach_area_ratio", default_value="0.30"),
+            DeclareLaunchArgument("approach_vision_throttle_weight", default_value="0.4"),
+            DeclareLaunchArgument("fork_target_x", default_value="0.30"),
+            DeclareLaunchArgument("fork_target_y", default_value="0.70"),
             DeclareLaunchArgument("stick_deadband_x", default_value="0.06"),
             DeclareLaunchArgument("stick_deadband_y", default_value="0.08"),
             DeclareLaunchArgument("align_stable_sec", default_value="0.7"),
@@ -53,7 +64,7 @@ def generate_launch_description():
             DeclareLaunchArgument("detach_duration_sec", default_value="0.3"),
             DeclareLaunchArgument("backoff_pwm", default_value="1420"),
             DeclareLaunchArgument("backoff_duration_sec", default_value="0.5"),
-            DeclareLaunchArgument("search_timeout_sec", default_value="20.0"),
+            DeclareLaunchArgument("search_timeout_sec", default_value="40.0"),
             DeclareLaunchArgument("area_verify_sec", default_value="12.0"),
             Node(
                 package="auv_buoy_vision_control",
@@ -96,6 +107,13 @@ def generate_launch_description():
                         "approach_area_ratio": ParameterValue(
                             LaunchConfiguration("approach_area_ratio"), value_type=float
                         ),
+                        "approach_vision_throttle_weight": ParameterValue(
+                            LaunchConfiguration("approach_vision_throttle_weight"),
+                            value_type=float,
+                        ),
+                        "min_detection_hits": ParameterValue(
+                            LaunchConfiguration("min_detection_hits"), value_type=int
+                        ),
                         "fork_target_x": ParameterValue(
                             LaunchConfiguration("fork_target_x"), value_type=float
                         ),
@@ -135,6 +153,12 @@ def generate_launch_description():
                         "area_verify_sec": ParameterValue(
                             LaunchConfiguration("area_verify_sec"), value_type=float
                         ),
+                        "buoyancy_hold_delta_pwm": ParameterValue(
+                            LaunchConfiguration("buoyancy_hold_delta_pwm"), value_type=int
+                        ),
+                        "lpf_tau_sec": ParameterValue(
+                            LaunchConfiguration("lpf_tau_sec"), value_type=float
+                        ),
                         "throttle_channel": ParameterValue(
                             LaunchConfiguration("throttle_channel"), value_type=int
                         ),
@@ -158,6 +182,12 @@ def generate_launch_description():
                         ),
                         "approach_forward_pwm": ParameterValue(
                             LaunchConfiguration("forward_pwm"), value_type=int
+                        ),
+                        "approach_forward_min_pwm": ParameterValue(
+                            LaunchConfiguration("approach_forward_min_pwm"), value_type=int
+                        ),
+                        "search_yaw_pwm": ParameterValue(
+                            LaunchConfiguration("search_yaw_pwm"), value_type=int
                         ),
                         "yaw_invert": ParameterValue(
                             LaunchConfiguration("yaw_invert"), value_type=bool

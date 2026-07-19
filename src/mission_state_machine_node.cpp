@@ -65,7 +65,7 @@ public:
     // --- 비전 탐지 / 탐색 ---
     buoy_class_id_ = declare_parameter<int>("buoy_class_id", 0);
     stick_class_id_ = declare_parameter<int>("stick_class_id", 1);
-    min_detection_hits_ = declare_parameter<int>("min_detection_hits", 3);
+    min_detection_hits_ = declare_parameter<int>("min_detection_hits", 5);
     // bbox 면적 / 이미지 면적 비율이 이 값 이상이면 "충분히 가까움"으로 판단
     approach_area_ratio_ = declare_parameter<double>("approach_area_ratio", 0.30);
     search_timeout_sec_ = declare_parameter<double>("search_timeout_sec", 40.0);
@@ -78,8 +78,9 @@ public:
       declare_parameter<double>("buoy_same_target_center_ratio", 0.12);
 
     // --- 막대(stick) 정렬 ---
-    fork_target_x_ = declare_parameter<double>("fork_target_x", 0.5);
-    fork_target_y_ = declare_parameter<double>("fork_target_y", 0.5);
+    // 이미지 3사분면(왼쪽 아래) 쪽. 끝단이 아닌 대략 (0.30, 0.70)
+    fork_target_x_ = declare_parameter<double>("fork_target_x", 0.30);
+    fork_target_y_ = declare_parameter<double>("fork_target_y", 0.70);
     stick_deadband_x_ = declare_parameter<double>("stick_deadband_x", 0.06);
     stick_deadband_y_ = declare_parameter<double>("stick_deadband_y", 0.08);
     align_stable_sec_ = declare_parameter<double>("align_stable_sec", 0.7);
@@ -325,7 +326,7 @@ private:
     }
   }
 
-  // SEARCH/AREA_VERIFY: 면적 > confidence > 오른쪽 순으로 타깃 선택.
+  // SEARCH/AREA_VERIFY: 면적 > 박스 확률(confidence) > 오른쪽 순으로 타깃 선택.
   // APPROACH/ALIGN: 같은 타깃만 갱신(탐색 중 고른 부표를 유지).
   void accept_buoy_detection(Detection incoming)
   {
@@ -358,7 +359,7 @@ private:
     return dx <= buoy_same_target_center_ratio_ && dy <= buoy_same_target_center_ratio_;
   }
 
-  // 면적이 뚜렷이 크면 우선. 비슷하면 confidence. 그것도 비슷하면 center_x(오른쪽) 우선.
+  // 면적 큰 것 우선. 비슷하면 박스 확률(confidence) 높은 것. 그것도 비슷하면 오른쪽.
   bool is_better_buoy(const Detection & candidate, const Detection & current) const
   {
     const double cand_area = std::max(0.0, static_cast<double>(candidate.width * candidate.height));
@@ -855,15 +856,15 @@ private:
   double lpf_tau_sec_{0.3};
   int buoy_class_id_{0};
   int stick_class_id_{1};
-  int min_detection_hits_{3};
+  int min_detection_hits_{5};
   double approach_area_ratio_{0.30};
   double search_timeout_sec_{40.0};
   double area_verify_sec_{12.0};
   double buoy_area_similar_ratio_{0.15};
   double buoy_confidence_similar_delta_{0.05};
   double buoy_same_target_center_ratio_{0.12};
-  double fork_target_x_{0.5};
-  double fork_target_y_{0.5};
+  double fork_target_x_{0.30};
+  double fork_target_y_{0.70};
   double stick_deadband_x_{0.06};
   double stick_deadband_y_{0.08};
   double align_stable_sec_{0.7};
