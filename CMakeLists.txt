@@ -19,7 +19,17 @@ add_executable(mission_state_machine_node src/mission_state_machine_node.cpp)
 target_compile_features(mission_state_machine_node PUBLIC cxx_std_17)
 ament_target_dependencies(mission_state_machine_node geometry_msgs rclcpp std_msgs mavros_msgs)
 
+install(PROGRAMS
+  scripts/yolo_buoy_detector.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME yolo_buoy_detector
+)
 
+install(PROGRAMS
+  scripts/check_yolo_env.py
+  scripts/setup_laptop_yolo_env.sh
+  DESTINATION lib/${PROJECT_NAME}
+)
 
 install(TARGETS
   bbox_controller_node
