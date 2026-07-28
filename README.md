@@ -25,25 +25,26 @@ AUV NUC
 
 ## 미션 흐름
 
-<!-- [ACOUSTIC-VISION HANDSHAKE] near zone 요청 → confirm → grant, 또는 경계/timeout 강제 grant. -->
+<!-- [ACOUSTIC-VISION HANDSHAKE] near zone 요청 → confirm → grant, 또는 외부 강제 grant. -->
 ```text
 IDLE -> TARGET_CONFIRM -> WAIT_CONTROL_GRANT -> SEARCH/APPROACH_BUOY -> ALIGN_STICK
      -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
      -> (성공/포기 시 SEARCH 반복)
      -> SEARCH 타임아웃 시 AREA_VERIFY -> ASCEND -> COMPLETE
 
-강제 인계(벽 경계 / acoustic_timeout): IDLE에서 바로 SEARCH (또는 buoy 확정 시 APPROACH)
+강제 인계(벽 경계 / acoustic timeout): 외부에서 grant를 주면 IDLE에서 SEARCH
+이미 가까운 buoy가 확정된 상태에서 grant를 받으면 바로 APPROACH
 ```
 
 수심 유실 또는 최대수심 초과 시 `FAILSAFE`로 전환하고 제어 채널을 `RELEASE`합니다.
+이 노드는 하강 단계(`DIVE`)를 수행하지 않습니다. Acoustic/상위 제어기가 near zone과 적정 수심까지 유도한 뒤 Vision에 제어권을 넘기는 구조입니다.
 
 | 상태 | 동작 요약 |
 |------|-----------|
-| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음. 강제 grant면 바로 SEARCH |
+| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음. 외부 grant면 바로 SEARCH |
 | TARGET_CONFIRM | YOLO 가까운 buoy를 4 frame/0.3 s 확정. RC 미발행 |
 | WAIT_CONTROL_GRANT | Acoustic의 RC 종료 승인 대기. RC 미발행 |
-| DIVE | `work_depth_m`까지 수심 P + 양성부력 바이어스. ±0.2m를 2초 유지 시 SEARCH |
-| SEARCH | 수심 유지 + yaw 회전. YOLO의 가까운 buoy를 4 frame/0.3 s 확인하면 APPROACH. 40초면 AREA_VERIFY |
+| SEARCH | `work_depth_m` 유지 + 제자리 yaw 회전. forward는 중립. YOLO의 가까운 buoy를 4 frame/0.3 s 확인하면 APPROACH. 40초면 AREA_VERIFY |
 | APPROACH | buoy 중앙 정렬, 전진 면적 P(1700→1560), throttle=비전+수심 블렌딩. 면적≥30%+stick → ALIGN |
 | ALIGN | stick을 포크 목표점으로 정렬(+수심 블렌딩). deadband 0.7초 → INSERT |
 | INSERT/DETACH/BACKOFF | 시간 기반 전진/후진 펄스 + 작업수심 유지 |
@@ -88,7 +89,7 @@ sensor_msgs/msg/CompressedImage
 /auv/depth                 std_msgs/msg/Float64  (양의 하방[m], 선택)
 /depth/pose                geometry_msgs/msg/PoseWithCovarianceStamped (선택)
 /homing/vision_search_active   std_msgs/msg/Bool  (Acoustic -> Vision)
-/vision/target_confirmed       std_msgs/msg/Bool  (Vision 내부 타깃 확정 모니터링)
+/vision/target_confirmed       std_msgs/msg/Bool  (Vision -> Acoustic, 타깃 확정)
 /homing/vision_control_granted std_msgs/msg/Bool  (Acoustic -> Vision)
 /mission/state             std_msgs/msg/String   (latched)
 ```
@@ -170,6 +171,7 @@ ros2 topic hz /vision/yolo/annotated/compressed
 ## AUV NUC: 상태머신 실행
 
 사전 점검: QGC/MAVLink에서 RC 채널·PWM 방향과 수심 부호/단위를 확인한다.
+`work_depth_m`은 하강 목표가 아니라 Vision 제어 중 유지할 수심입니다. Acoustic/상위 제어가 넘겨준 실제 작업 수심과 맞춰 설정하세요.
 
 ```bash
 ros2 launch auv_buoy_vision_control auv_bbox_controller.launch.py \
@@ -201,7 +203,7 @@ ros2 topic echo /homing/vision_control_granted
 |----------|------|------|
 | `search_yaw_pwm` | 1600 | SEARCH/AREA_VERIFY yaw 고정 PWM |
 | `search_timeout_sec` | 40 | SEARCH 타임아웃 → AREA_VERIFY |
-| `target_confirm_hits` | 4 | SEARCH에서 가까운 동일 buoy 확인에 필요한 연속 hit |
+| `target_confirm_hits` | 4 | TARGET_CONFIRM/SEARCH에서 가까운 동일 buoy 확인에 필요한 연속 hit |
 | `target_confirm_sec` | 0.3 | 위 연속 hit 이후 추가 유지 시간 |
 | `min_detection_hits` | 5 | AREA_VERIFY 등 후속 재탐색의 연속 hit |
 | `approach_area_ratio` | 0.30 | ALIGN 진입·전진 P 스케일용 면적비 |
@@ -215,7 +217,7 @@ ros2 topic echo /homing/vision_control_granted
 
 | 파라미터 | 기본 | 설명 |
 |----------|------|------|
-| `work_depth_m` | 9.5 | 작업 수심 |
+| `work_depth_m` | 9.5 | Vision 제어 중 유지할 작업 수심. 하강 동작은 수행하지 않음 |
 | `depth_kp_pwm_per_m` | 45 | 수심 P게인 (PWM/m) |
 | `max_depth_delta_pwm` | 160 | 수심 PWM 편차 클램프 |
 | `buoyancy_hold_delta_pwm` | 40 | 양성 부력 보정 (목표에서도 하강 바이어스). ASCEND에서는 꺼짐 |

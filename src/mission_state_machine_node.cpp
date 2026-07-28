@@ -2,7 +2,7 @@
 //
 // 비전 bbox + 수심을 받아 MAVROS RC override로 throttle/yaw/forward를 제어한다.
 // 기본 흐름:
-//   IDLE -> DIVE -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
+//   IDLE -> TARGET_CONFIRM -> WAIT_CONTROL_GRANT -> SEARCH/APPROACH_BUOY -> ALIGN_STICK
 //        -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
 //        -> (성공 시 SEARCH 반복 / 실패 재시도 / 탐색 소진 시 AREA_VERIFY -> ASCEND -> COMPLETE)
 // 수심 타임아웃·최대수심 초과 시 FAILSAFE로 전환하고 제어 채널을 해제한다.
@@ -60,7 +60,6 @@ public:
     surface_depth_m_ = declare_parameter<double>("surface_depth_m", 0.4);
     max_depth_m_ = declare_parameter<double>("max_depth_m", 10.5);
     depth_tolerance_m_ = declare_parameter<double>("depth_tolerance_m", 0.2);
-    depth_stable_sec_ = declare_parameter<double>("depth_stable_sec", 2.0);
     depth_kp_pwm_per_m_ = declare_parameter<double>("depth_kp_pwm_per_m", 45.0);
     max_depth_delta_pwm_ = declare_parameter<int>("max_depth_delta_pwm", 160);
     // 양성 부력 보정: 목표수심에서 오차 0이어도 하강 방향으로 이만큼 추가 (PWM)
@@ -188,7 +187,6 @@ private:
     IDLE,            // [ACOUSTIC-VISION HANDSHAKE] Acoustic 요청 대기, RC 미발행
     TARGET_CONFIRM,  // [ACOUSTIC-VISION HANDSHAKE] buoy 확정만, RC 미발행
     WAIT_CONTROL_GRANT, // [ACOUSTIC-VISION HANDSHAKE] Acoustic RC 종료 승인 대기
-    DIVE,            // 작업 수심까지 하강
     SEARCH,          // yaw 회전하며 buoy 탐색
     APPROACH_BUOY,   // buoy 중심 추적 + 전진
     ALIGN_STICK,     // stick을 포크 목표점으로 정밀 정렬
@@ -496,9 +494,6 @@ private:
       case State::TARGET_CONFIRM:
       case State::WAIT_CONTROL_GRANT:
         break;
-      case State::DIVE:
-        run_dive(channels);
-        break;
       case State::SEARCH:
         run_search(channels);
         break;
@@ -581,22 +576,6 @@ private:
       return;
     }
     transition_to(State::APPROACH_BUOY, "stable nearest buoy confirmed");
-  }
-
-  // 작업 수심 유지. 허용오차 안에서 depth_stable_sec_ 동안 유지되면 SEARCH로.
-  void run_dive(std::array<uint16_t, 18> & channels)
-  {
-    set_neutral_control(channels);
-    set_channel(channels, throttle_channel_, depth_control_pwm(work_depth_m_));
-    if (std::abs(*depth_m_ - work_depth_m_) <= depth_tolerance_m_) {
-      if (!condition_started_at_) {
-        condition_started_at_ = now();
-      } else if ((now() - *condition_started_at_).seconds() >= depth_stable_sec_) {
-        transition_to(State::SEARCH, "work depth stable");
-      }
-    } else {
-      condition_started_at_.reset();
-    }
   }
 
   // 수심 유지 + yaw 회전 탐색. buoy 확정 시 APPROACH, 타임아웃 시 AREA_VERIFY.
@@ -861,7 +840,6 @@ private:
       case State::IDLE: return "IDLE";
       case State::TARGET_CONFIRM: return "TARGET_CONFIRM";
       case State::WAIT_CONTROL_GRANT: return "WAIT_CONTROL_GRANT";
-      case State::DIVE: return "DIVE";
       case State::SEARCH: return "SEARCH";
       case State::APPROACH_BUOY: return "APPROACH_BUOY";
       case State::ALIGN_STICK: return "ALIGN_STICK";
@@ -939,7 +917,6 @@ private:
   double surface_depth_m_{0.4};
   double max_depth_m_{10.5};
   double depth_tolerance_m_{0.2};
-  double depth_stable_sec_{2.0};
   double depth_kp_pwm_per_m_{45.0};
   int max_depth_delta_pwm_{160};
   int buoyancy_hold_delta_pwm_{40};
@@ -988,7 +965,7 @@ private:
   bool vision_has_control_{false};
   State state_{State::IDLE};
   rclcpp::Time state_entered_at_{0, 0, RCL_ROS_TIME};
-  // DIVE 수심 안정 / ALIGN deadband 유지 등 "조건 지속 시간" 측정용
+  // ALIGN deadband 유지 등 "조건 지속 시간" 측정용
   std::optional<rclcpp::Time> condition_started_at_;
   std::optional<rclcpp::Time> target_confirm_started_at_;
   std::optional<double> depth_m_;
