@@ -186,6 +186,7 @@ private:
   enum class State
   {
     IDLE,            // [ACOUSTIC-VISION HANDSHAKE] Acoustic 요청 대기, RC 미발행
+    TARGET_CONFIRM,  // [ACOUSTIC-VISION HANDSHAKE] buoy 확정만, RC 미발행
     WAIT_CONTROL_GRANT, // [ACOUSTIC-VISION HANDSHAKE] Acoustic RC 종료 승인 대기
     DIVE,            // 작업 수심까지 하강
     SEARCH,          // yaw 회전하며 buoy 탐색
@@ -255,7 +256,7 @@ private:
     }
   }
 
-  // [ACOUSTIC-VISION HANDOFF V2] 요청을 받으면 RC를 내지 않고 최종 grant만 기다린다.
+  // [ACOUSTIC-VISION HANDSHAKE] near zone 요청 후 buoy를 먼저 확정한다. RC는 내지 않는다.
   void on_vision_search_request(const std_msgs::msg::Bool::SharedPtr msg)
   {
     if (!msg->data || state_ != State::IDLE) {
@@ -265,16 +266,33 @@ private:
     stick_.reset();
     target_confirm_started_at_.reset();
     publish_target_confirmed(false);
-    transition_to(State::WAIT_CONTROL_GRANT, "acoustic vision-search request");
+    transition_to(State::TARGET_CONFIRM, "acoustic vision-search request");
   }
 
-  // [ACOUSTIC-VISION HANDOFF V2] 승인 후에는 기존 SEARCH가 가까운 buoy를 찾고 확정한다.
+  // [ACOUSTIC-VISION HANDSHAKE] Acoustic confirm / 경계 / timeout grant.
+  // IDLE에서도 받는다(탐색 요청 없이 강제 인계된 경우).
+  // buoy가 이미 확정돼 있으면 APPROACH, 아니면 SEARCH.
   void on_vision_control_granted(const std_msgs::msg::Bool::SharedPtr msg)
   {
-    if (!msg->data || state_ != State::WAIT_CONTROL_GRANT) {
+    if (!msg->data) {
+      return;
+    }
+    if (state_ != State::IDLE &&
+      state_ != State::TARGET_CONFIRM &&
+      state_ != State::WAIT_CONTROL_GRANT)
+    {
       return;
     }
     vision_has_control_ = true;
+    if (recent(buoy_) && buoy_->consecutive_hits >= target_confirm_hits_) {
+      transition_to(State::APPROACH_BUOY, "acoustic control released; buoy already confirmed");
+      return;
+    }
+    if (state_ == State::IDLE) {
+      buoy_.reset();
+      stick_.reset();
+      target_confirm_started_at_.reset();
+    }
     transition_to(State::SEARCH, "acoustic control released; visual search started");
   }
 
@@ -371,7 +389,8 @@ private:
   {
     const bool selecting =
       state_ == State::SEARCH || state_ == State::AREA_VERIFY ||
-      state_ == State::IDLE || state_ == State::WAIT_CONTROL_GRANT;
+      state_ == State::IDLE || state_ == State::TARGET_CONFIRM ||
+      state_ == State::WAIT_CONTROL_GRANT;
     if (!recent(buoy_)) {
       buoy_ = incoming;
       target_confirm_started_at_.reset();
@@ -456,6 +475,10 @@ private:
     if (state_ == State::IDLE) {
       return;
     }
+    if (state_ == State::TARGET_CONFIRM) {
+      run_target_confirm();
+      return;
+    }
     if (state_ == State::WAIT_CONTROL_GRANT || !vision_has_control_) {
       return;
     }
@@ -470,6 +493,7 @@ private:
 
     switch (state_) {
       case State::IDLE:
+      case State::TARGET_CONFIRM:
       case State::WAIT_CONTROL_GRANT:
         break;
       case State::DIVE:
@@ -534,8 +558,8 @@ private:
     publish_channels(channels);
   }
 
-  // [ACOUSTIC-VISION HANDOFF V2] SEARCH 중 YOLO가 고른 가까운 동일 buoy를
-  // 4 frame/0.3 s 확인한 뒤 접근한다. 화면 중심 조건은 접근 제어가 담당한다.
+  // [ACOUSTIC-VISION HANDSHAKE] grant 전에는 Acoustic에 confirm만 보내고,
+  // grant 이후 SEARCH에서는 같은 기준으로 APPROACH로 넘긴다.
   void run_target_confirm()
   {
     const bool stable_candidate = recent(buoy_) &&
@@ -552,6 +576,10 @@ private:
       return;
     }
     publish_target_confirmed(true);
+    if (!vision_has_control_) {
+      transition_to(State::WAIT_CONTROL_GRANT, "stable nearest buoy confirmed");
+      return;
+    }
     transition_to(State::APPROACH_BUOY, "stable nearest buoy confirmed");
   }
 
@@ -784,7 +812,8 @@ private:
 
   bool mission_state_requires_depth() const
   {
-    return state_ != State::IDLE && state_ != State::WAIT_CONTROL_GRANT &&
+    return state_ != State::IDLE && state_ != State::TARGET_CONFIRM &&
+           state_ != State::WAIT_CONTROL_GRANT &&
            state_ != State::COMPLETE &&
            state_ != State::FAILSAFE;
   }
@@ -830,6 +859,7 @@ private:
   {
     switch (state) {
       case State::IDLE: return "IDLE";
+      case State::TARGET_CONFIRM: return "TARGET_CONFIRM";
       case State::WAIT_CONTROL_GRANT: return "WAIT_CONTROL_GRANT";
       case State::DIVE: return "DIVE";
       case State::SEARCH: return "SEARCH";

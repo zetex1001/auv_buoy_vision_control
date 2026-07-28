@@ -25,19 +25,22 @@ AUV NUC
 
 ## 미션 흐름
 
-<!-- [ACOUSTIC-VISION HANDOFF V2] Near zone에서 Vision으로 한 번만 인계한다. -->
+<!-- [ACOUSTIC-VISION HANDSHAKE] near zone 요청 → confirm → grant, 또는 경계/timeout 강제 grant. -->
 ```text
-IDLE -> WAIT_CONTROL_GRANT -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
+IDLE -> TARGET_CONFIRM -> WAIT_CONTROL_GRANT -> SEARCH/APPROACH_BUOY -> ALIGN_STICK
      -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
      -> (성공/포기 시 SEARCH 반복)
      -> SEARCH 타임아웃 시 AREA_VERIFY -> ASCEND -> COMPLETE
+
+강제 인계(벽 경계 / acoustic_timeout): IDLE에서 바로 SEARCH (또는 buoy 확정 시 APPROACH)
 ```
 
 수심 유실 또는 최대수심 초과 시 `FAILSAFE`로 전환하고 제어 채널을 `RELEASE`합니다.
 
 | 상태 | 동작 요약 |
 |------|-----------|
-| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음 |
+| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음. 강제 grant면 바로 SEARCH |
+| TARGET_CONFIRM | YOLO 가까운 buoy를 4 frame/0.3 s 확정. RC 미발행 |
 | WAIT_CONTROL_GRANT | Acoustic의 RC 종료 승인 대기. RC 미발행 |
 | DIVE | `work_depth_m`까지 수심 P + 양성부력 바이어스. ±0.2m를 2초 유지 시 SEARCH |
 | SEARCH | 수심 유지 + yaw 회전. YOLO의 가까운 buoy를 4 frame/0.3 s 확인하면 APPROACH. 40초면 AREA_VERIFY |
