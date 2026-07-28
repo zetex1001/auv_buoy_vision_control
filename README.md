@@ -25,8 +25,9 @@ AUV NUC
 
 ## 미션 흐름
 
+<!-- [ACOUSTIC-VISION HANDOFF V2] Near zone에서 Vision으로 한 번만 인계한다. -->
 ```text
-IDLE -> DIVE -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
+IDLE -> WAIT_CONTROL_GRANT -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
      -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
      -> (성공/포기 시 SEARCH 반복)
      -> SEARCH 타임아웃 시 AREA_VERIFY -> ASCEND -> COMPLETE
@@ -36,8 +37,10 @@ IDLE -> DIVE -> SEARCH -> APPROACH_BUOY -> ALIGN_STICK
 
 | 상태 | 동작 요약 |
 |------|-----------|
+| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음 |
+| WAIT_CONTROL_GRANT | Acoustic의 RC 종료 승인 대기. RC 미발행 |
 | DIVE | `work_depth_m`까지 수심 P + 양성부력 바이어스. ±0.2m를 2초 유지 시 SEARCH |
-| SEARCH | 수심 유지 + yaw 회전. buoy 연속 hit ≥ 5면 APPROACH. 40초면 AREA_VERIFY |
+| SEARCH | 수심 유지 + yaw 회전. YOLO의 가까운 buoy를 4 frame/0.3 s 확인하면 APPROACH. 40초면 AREA_VERIFY |
 | APPROACH | buoy 중앙 정렬, 전진 면적 P(1700→1560), throttle=비전+수심 블렌딩. 면적≥30%+stick → ALIGN |
 | ALIGN | stick을 포크 목표점으로 정렬(+수심 블렌딩). deadband 0.7초 → INSERT |
 | INSERT/DETACH/BACKOFF | 시간 기반 전진/후진 펄스 + 작업수심 유지 |
@@ -76,12 +79,14 @@ sensor_msgs/msg/CompressedImage
 - `detected >= 0.5` 이면 유효
 - `publish_per_class:=true`(기본)일 때 클래스마다 메시지 1개씩 발행 (buoy + stick 동시 갱신)
 
-### 수심 / enable / 상태
+### 수심 / Acoustic-Vision 핸드셰이크 / 상태
 
 ```text
 /auv/depth                 std_msgs/msg/Float64  (양의 하방[m], 선택)
 /depth/pose                geometry_msgs/msg/PoseWithCovarianceStamped (선택)
-/mission/control_enable    std_msgs/msg/Bool
+/homing/vision_search_active   std_msgs/msg/Bool  (Acoustic -> Vision)
+/vision/target_confirmed       std_msgs/msg/Bool  (Vision 내부 타깃 확정 모니터링)
+/homing/vision_control_granted std_msgs/msg/Bool  (Acoustic -> Vision)
 /mission/state             std_msgs/msg/String   (latched)
 ```
 
@@ -161,7 +166,7 @@ ros2 topic hz /vision/yolo/annotated/compressed
 
 ## AUV NUC: 상태머신 실행
 
-사전 점검: QGC/MAVLink에서 RC 채널·PWM 방향 확인. 수심 부호/단위 확인 전 enable 금지.
+사전 점검: QGC/MAVLink에서 RC 채널·PWM 방향과 수심 부호/단위를 확인한다.
 
 ```bash
 ros2 launch auv_buoy_vision_control auv_bbox_controller.launch.py \
@@ -176,12 +181,13 @@ ros2 launch auv_buoy_vision_control auv_bbox_controller.launch.py \
   stick_class_id:=1
 ```
 
-활성화 / 비활성화:
+핸드셰이크 상태 확인:
 
 ```bash
-ros2 topic pub --once /mission/control_enable std_msgs/msg/Bool "{data: true}"
-ros2 topic pub --once /mission/control_enable std_msgs/msg/Bool "{data: false}"
 ros2 topic echo /mission/state
+ros2 topic echo /homing/vision_search_active
+ros2 topic echo /vision/target_confirmed
+ros2 topic echo /homing/vision_control_granted
 ```
 
 ## 주요 파라미터 (노드/launch 기본값)
@@ -192,7 +198,9 @@ ros2 topic echo /mission/state
 |----------|------|------|
 | `search_yaw_pwm` | 1600 | SEARCH/AREA_VERIFY yaw 고정 PWM |
 | `search_timeout_sec` | 40 | SEARCH 타임아웃 → AREA_VERIFY |
-| `min_detection_hits` | 5 | buoy 확정에 필요한 연속 hit |
+| `target_confirm_hits` | 4 | SEARCH에서 가까운 동일 buoy 확인에 필요한 연속 hit |
+| `target_confirm_sec` | 0.3 | 위 연속 hit 이후 추가 유지 시간 |
+| `min_detection_hits` | 5 | AREA_VERIFY 등 후속 재탐색의 연속 hit |
 | `approach_area_ratio` | 0.30 | ALIGN 진입·전진 P 스케일용 면적비 |
 | `approach_forward_pwm` (`forward_pwm` launch 인자) | 1700 | APPROACH 전진 최대 |
 | `approach_forward_min_pwm` | 1560 | APPROACH 전진 최소 (가까울 때) |

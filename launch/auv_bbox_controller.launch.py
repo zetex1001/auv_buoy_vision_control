@@ -13,7 +13,18 @@ def generate_launch_description():
             DeclareLaunchArgument("depth_pose_topic", default_value="/depth/pose"),
             DeclareLaunchArgument("depth_pose_scale", default_value="-1.0"),
             DeclareLaunchArgument("depth_pose_offset_m", default_value="0.0"),
-            DeclareLaunchArgument("enable_topic", default_value="/mission/control_enable"),
+            # [ACOUSTIC-VISION HANDSHAKE] Acoustic 요청/타깃 확인/제어권 승인
+            DeclareLaunchArgument(
+                "vision_search_request_topic",
+                default_value="/homing/vision_search_active",
+            ),
+            DeclareLaunchArgument(
+                "target_confirmed_topic", default_value="/vision/target_confirmed"
+            ),
+            DeclareLaunchArgument(
+                "vision_control_granted_topic",
+                default_value="/homing/vision_control_granted",
+            ),
             DeclareLaunchArgument("state_topic", default_value="/mission/state"),
             DeclareLaunchArgument("rc_override_topic", default_value="/mavros/rc/override"),
             DeclareLaunchArgument("rc_monitor_topic", default_value="/mission/rc_command"),
@@ -51,6 +62,8 @@ def generate_launch_description():
             DeclareLaunchArgument("buoy_class_id", default_value="0"),
             DeclareLaunchArgument("stick_class_id", default_value="1"),
             DeclareLaunchArgument("min_detection_hits", default_value="5"),
+            DeclareLaunchArgument("target_confirm_hits", default_value="4"),
+            DeclareLaunchArgument("target_confirm_sec", default_value="0.3"),
             DeclareLaunchArgument("approach_area_ratio", default_value="0.30"),
             DeclareLaunchArgument("approach_vision_throttle_weight", default_value="0.4"),
             DeclareLaunchArgument("fork_target_x", default_value="0.30"),
@@ -82,7 +95,15 @@ def generate_launch_description():
                         "depth_pose_offset_m": ParameterValue(
                             LaunchConfiguration("depth_pose_offset_m"), value_type=float
                         ),
-                        "enable_topic": LaunchConfiguration("enable_topic"),
+                        "vision_search_request_topic": LaunchConfiguration(
+                            "vision_search_request_topic"
+                        ),
+                        "target_confirmed_topic": LaunchConfiguration(
+                            "target_confirmed_topic"
+                        ),
+                        "vision_control_granted_topic": LaunchConfiguration(
+                            "vision_control_granted_topic"
+                        ),
                         "state_topic": LaunchConfiguration("state_topic"),
                         "rc_override_topic": LaunchConfiguration("rc_override_topic"),
                         "rc_monitor_topic": LaunchConfiguration("rc_monitor_topic"),
@@ -113,6 +134,12 @@ def generate_launch_description():
                         ),
                         "min_detection_hits": ParameterValue(
                             LaunchConfiguration("min_detection_hits"), value_type=int
+                        ),
+                        "target_confirm_hits": ParameterValue(
+                            LaunchConfiguration("target_confirm_hits"), value_type=int
+                        ),
+                        "target_confirm_sec": ParameterValue(
+                            LaunchConfiguration("target_confirm_sec"), value_type=float
                         ),
                         "fork_target_x": ParameterValue(
                             LaunchConfiguration("fork_target_x"), value_type=float

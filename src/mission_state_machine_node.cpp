@@ -39,7 +39,13 @@ public:
     // pose.z 를 양의 하방(positive-down) 수심[m]으로 변환: depth = scale * z + offset
     depth_pose_scale_ = declare_parameter<double>("depth_pose_scale", -1.0);
     depth_pose_offset_m_ = declare_parameter<double>("depth_pose_offset_m", 0.0);
-    enable_topic_ = declare_parameter<std::string>("enable_topic", "/mission/control_enable");
+    // [ACOUSTIC-VISION HANDSHAKE] Acoustic 요청 후 타깃을 확인하고, 승인 후에만 RC를 출력한다.
+    vision_search_request_topic_ = declare_parameter<std::string>(
+      "vision_search_request_topic", "/homing/vision_search_active");
+    target_confirmed_topic_ = declare_parameter<std::string>(
+      "target_confirmed_topic", "/vision/target_confirmed");
+    vision_control_granted_topic_ = declare_parameter<std::string>(
+      "vision_control_granted_topic", "/homing/vision_control_granted");
     state_topic_ = declare_parameter<std::string>("state_topic", "/mission/state");
     rc_override_topic_ =
       declare_parameter<std::string>("rc_override_topic", "/mavros/rc/override");
@@ -66,6 +72,8 @@ public:
     buoy_class_id_ = declare_parameter<int>("buoy_class_id", 0);
     stick_class_id_ = declare_parameter<int>("stick_class_id", 1);
     min_detection_hits_ = declare_parameter<int>("min_detection_hits", 5);
+    target_confirm_hits_ = declare_parameter<int>("target_confirm_hits", 4);
+    target_confirm_sec_ = declare_parameter<double>("target_confirm_sec", 0.3);
     // bbox 면적 / 이미지 면적 비율이 이 값 이상이면 "충분히 가까움"으로 판단
     approach_area_ratio_ = declare_parameter<double>("approach_area_ratio", 0.30);
     search_timeout_sec_ = declare_parameter<double>("search_timeout_sec", 40.0);
@@ -128,13 +136,21 @@ public:
         depth_pose_topic_, 10,
         std::bind(&MissionStateMachineNode::on_depth_pose, this, std::placeholders::_1));
     }
-    enable_sub_ = create_subscription<std_msgs::msg::Bool>(
-      enable_topic_, 10, std::bind(&MissionStateMachineNode::on_enable, this, std::placeholders::_1));
+    vision_search_request_sub_ = create_subscription<std_msgs::msg::Bool>(
+      vision_search_request_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(&MissionStateMachineNode::on_vision_search_request, this,
+        std::placeholders::_1));
+    vision_control_granted_sub_ = create_subscription<std_msgs::msg::Bool>(
+      vision_control_granted_topic_, rclcpp::QoS(1).reliable().transient_local(),
+      std::bind(&MissionStateMachineNode::on_vision_control_granted, this,
+        std::placeholders::_1));
     rc_pub_ = create_publisher<mavros_msgs::msg::OverrideRCIn>(rc_override_topic_, 10);
     rc_monitor_pub_ = create_publisher<mavros_msgs::msg::OverrideRCIn>(rc_monitor_topic_, 10);
     // latched: 늦게 구독해도 마지막 상태를 받을 수 있음
     state_pub_ = create_publisher<std_msgs::msg::String>(
       state_topic_, rclcpp::QoS(1).reliable().transient_local());
+    target_confirmed_pub_ = create_publisher<std_msgs::msg::Bool>(
+      target_confirmed_topic_, rclcpp::QoS(1).reliable().transient_local());
 
     const double period_sec = 1.0 / std::max(1.0, control_rate_hz_);
     timer_ = create_wall_timer(
@@ -143,21 +159,23 @@ public:
 
     state_entered_at_ = now();
     publish_state();
+    publish_target_confirmed(false);
     RCLCPP_INFO(
       get_logger(),
-      "Mission state machine ready; enable=%s depth=%s depth_pose=%s bbox=%s state=%s "
-      "rc_output=%s rc_monitor=%s",
-      enable_topic_.c_str(), depth_topic_.c_str(), depth_pose_topic_.c_str(), bbox_topic_.c_str(),
+      "Mission state machine ready; vision_request=%s control_grant=%s depth=%s "
+      "depth_pose=%s bbox=%s state=%s rc_output=%s rc_monitor=%s",
+      vision_search_request_topic_.c_str(), vision_control_granted_topic_.c_str(),
+      depth_topic_.c_str(), depth_pose_topic_.c_str(), bbox_topic_.c_str(),
       state_topic_.c_str(), rc_override_topic_.c_str(), rc_monitor_topic_.c_str());
-    RCLCPP_WARN(
-      get_logger(),
-      "Control starts disabled. Publish std_msgs/Bool true to %s after pre-flight checks.",
-      enable_topic_.c_str());
+    RCLCPP_INFO(get_logger(), "Vision RC remains silent until acoustic control is granted");
   }
 
   // 노드 종료 시 제어 채널을 한 번 RELEASE 해서 수동/다른 제어기에 넘긴다.
   void publish_release_once()
   {
+    if (!vision_has_control_) {
+      return;
+    }
     auto channels = nochange_channels();
     release_controlled_channels(channels);
     publish_channels(channels);
@@ -167,7 +185,8 @@ private:
   // 미션 단계. 타이머 콜백에서 switch로 분기한다.
   enum class State
   {
-    IDLE,            // 대기 (enable=false 또는 시작 전)
+    IDLE,            // [ACOUSTIC-VISION HANDSHAKE] Acoustic 요청 대기, RC 미발행
+    WAIT_CONTROL_GRANT, // [ACOUSTIC-VISION HANDSHAKE] Acoustic RC 종료 승인 대기
     DIVE,            // 작업 수심까지 하강
     SEARCH,          // yaw 회전하며 buoy 탐색
     APPROACH_BUOY,   // buoy 중심 추적 + 전진
@@ -230,14 +249,33 @@ private:
     if (lpf_tau_sec_ < 0.0) {
       throw std::invalid_argument("lpf_tau_sec must be >= 0");
     }
+    if (target_confirm_hits_ < 1 || target_confirm_sec_ < 0.0)
+    {
+      throw std::invalid_argument("invalid acoustic-vision handshake confirmation parameters");
+    }
   }
 
-  void on_enable(const std_msgs::msg::Bool::SharedPtr msg)
+  // [ACOUSTIC-VISION HANDOFF V2] 요청을 받으면 RC를 내지 않고 최종 grant만 기다린다.
+  void on_vision_search_request(const std_msgs::msg::Bool::SharedPtr msg)
   {
-    enabled_ = msg->data;
-    if (!enabled_) {
-      transition_to(State::IDLE, "control disabled");
+    if (!msg->data || state_ != State::IDLE) {
+      return;
     }
+    buoy_.reset();
+    stick_.reset();
+    target_confirm_started_at_.reset();
+    publish_target_confirmed(false);
+    transition_to(State::WAIT_CONTROL_GRANT, "acoustic vision-search request");
+  }
+
+  // [ACOUSTIC-VISION HANDOFF V2] 승인 후에는 기존 SEARCH가 가까운 buoy를 찾고 확정한다.
+  void on_vision_control_granted(const std_msgs::msg::Bool::SharedPtr msg)
+  {
+    if (!msg->data || state_ != State::WAIT_CONTROL_GRANT) {
+      return;
+    }
+    vision_has_control_ = true;
+    transition_to(State::SEARCH, "acoustic control released; visual search started");
   }
 
   void on_depth(const std_msgs::msg::Float64::SharedPtr msg)
@@ -308,6 +346,7 @@ private:
         msg->data[base + 9], now(), 1};
       const int class_id = static_cast<int>(std::lround(msg->data[base + 2]));
       if (class_id == buoy_class_id_) {
+        // [ACOUSTIC-VISION HANDOFF V2] YOLO와 동일하게 면적 우선으로 가까운 buoy를 선택한다.
         if (!best_buoy || is_better_buoy(det, *best_buoy)) {
           best_buoy = det;
         }
@@ -331,9 +370,11 @@ private:
   void accept_buoy_detection(Detection incoming)
   {
     const bool selecting =
-      state_ == State::SEARCH || state_ == State::AREA_VERIFY || state_ == State::IDLE;
+      state_ == State::SEARCH || state_ == State::AREA_VERIFY ||
+      state_ == State::IDLE || state_ == State::WAIT_CONTROL_GRANT;
     if (!recent(buoy_)) {
       buoy_ = incoming;
+      target_confirm_started_at_.reset();
       return;
     }
     if (same_buoy_target(incoming, *buoy_)) {
@@ -342,6 +383,7 @@ private:
     }
     if (selecting && is_better_buoy(incoming, *buoy_)) {
       buoy_ = incoming;
+      target_confirm_started_at_.reset();
       return;
     }
     // APPROACH 등에서는 다른 부표로 타깃을 바꾸지 않음
@@ -410,28 +452,12 @@ private:
   {
     auto channels = nochange_channels();
 
-    // 제어 비활성: 채널 RELEASE 후 복귀
-    if (!enabled_) {
-      if (state_ != State::IDLE) {
-        transition_to(State::IDLE, "control disabled");
-      }
-      release_controlled_channels(channels);
-      publish_channels(channels);
+    // [ACOUSTIC-VISION HANDSHAKE] 승인 전 상태는 RELEASE도 발행하지 않는다.
+    if (state_ == State::IDLE) {
       return;
     }
-
-    // IDLE에서 유효 수심이 들어오면 미션 시작
-    if (state_ == State::IDLE) {
-      if (!has_recent_depth()) {
-        release_controlled_channels(channels);
-        publish_channels(channels);
-        RCLCPP_WARN_THROTTLE(
-          get_logger(), *get_clock(), 2000,
-          "Waiting for a recent positive-down depth value on %s", depth_topic_.c_str());
-        return;
-      }
-      target_retries_ = 0;
-      transition_to(State::DIVE, "enabled with valid depth");
+    if (state_ == State::WAIT_CONTROL_GRANT || !vision_has_control_) {
+      return;
     }
 
     // 안전: 수심 유실 또는 최대수심 초과
@@ -444,7 +470,7 @@ private:
 
     switch (state_) {
       case State::IDLE:
-        release_controlled_channels(channels);
+      case State::WAIT_CONTROL_GRANT:
         break;
       case State::DIVE:
         run_dive(channels);
@@ -508,6 +534,27 @@ private:
     publish_channels(channels);
   }
 
+  // [ACOUSTIC-VISION HANDOFF V2] SEARCH 중 YOLO가 고른 가까운 동일 buoy를
+  // 4 frame/0.3 s 확인한 뒤 접근한다. 화면 중심 조건은 접근 제어가 담당한다.
+  void run_target_confirm()
+  {
+    const bool stable_candidate = recent(buoy_) &&
+      buoy_->consecutive_hits >= target_confirm_hits_;
+    if (!stable_candidate) {
+      target_confirm_started_at_.reset();
+      return;
+    }
+    if (!target_confirm_started_at_) {
+      target_confirm_started_at_ = now();
+      return;
+    }
+    if ((now() - *target_confirm_started_at_).seconds() < target_confirm_sec_) {
+      return;
+    }
+    publish_target_confirmed(true);
+    transition_to(State::APPROACH_BUOY, "stable nearest buoy confirmed");
+  }
+
   // 작업 수심 유지. 허용오차 안에서 depth_stable_sec_ 동안 유지되면 SEARCH로.
   void run_dive(std::array<uint16_t, 18> & channels)
   {
@@ -530,9 +577,8 @@ private:
     set_neutral_control(channels);
     set_channel(channels, throttle_channel_, depth_control_pwm(work_depth_m_));
     set_channel(channels, yaw_channel_, search_yaw_pwm_);
-    if (confirmed_buoy()) {
-      transition_to(State::APPROACH_BUOY, "confirmed buoy selected");
-    } else if (state_age_sec() >= search_timeout_sec_) {
+    run_target_confirm();
+    if (state_ == State::SEARCH && state_age_sec() >= search_timeout_sec_) {
       transition_to(State::AREA_VERIFY, "initial search exhausted");
     }
   }
@@ -738,7 +784,9 @@ private:
 
   bool mission_state_requires_depth() const
   {
-    return state_ != State::IDLE && state_ != State::COMPLETE && state_ != State::FAILSAFE;
+    return state_ != State::IDLE && state_ != State::WAIT_CONTROL_GRANT &&
+           state_ != State::COMPLETE &&
+           state_ != State::FAILSAFE;
   }
 
   double state_age_sec() const
@@ -770,10 +818,19 @@ private:
     state_pub_->publish(msg);
   }
 
+  // [ACOUSTIC-VISION HANDSHAKE] 타깃 확정 상태를 Acoustic에 전달한다.
+  void publish_target_confirmed(bool confirmed)
+  {
+    std_msgs::msg::Bool msg;
+    msg.data = confirmed;
+    target_confirmed_pub_->publish(msg);
+  }
+
   static const char * state_name(State state)
   {
     switch (state) {
       case State::IDLE: return "IDLE";
+      case State::WAIT_CONTROL_GRANT: return "WAIT_CONTROL_GRANT";
       case State::DIVE: return "DIVE";
       case State::SEARCH: return "SEARCH";
       case State::APPROACH_BUOY: return "APPROACH_BUOY";
@@ -838,7 +895,10 @@ private:
   std::string depth_pose_topic_;
   double depth_pose_scale_{-1.0};
   double depth_pose_offset_m_{0.0};
-  std::string enable_topic_;
+  // [ACOUSTIC-VISION HANDSHAKE] 제어권 요청/타깃 확인/최종 승인 토픽
+  std::string vision_search_request_topic_;
+  std::string target_confirmed_topic_;
+  std::string vision_control_granted_topic_;
   std::string state_topic_;
   std::string rc_override_topic_;
   std::string rc_monitor_topic_;
@@ -857,6 +917,8 @@ private:
   int buoy_class_id_{0};
   int stick_class_id_{1};
   int min_detection_hits_{5};
+  int target_confirm_hits_{4};
+  double target_confirm_sec_{0.3};
   double approach_area_ratio_{0.30};
   double search_timeout_sec_{40.0};
   double area_verify_sec_{12.0};
@@ -893,11 +955,12 @@ private:
   bool vertical_positive_is_up_{true};
 
   // --- 런타임 상태 ---
-  bool enabled_{false};
+  bool vision_has_control_{false};
   State state_{State::IDLE};
   rclcpp::Time state_entered_at_{0, 0, RCL_ROS_TIME};
   // DIVE 수심 안정 / ALIGN deadband 유지 등 "조건 지속 시간" 측정용
   std::optional<rclcpp::Time> condition_started_at_;
+  std::optional<rclcpp::Time> target_confirm_started_at_;
   std::optional<double> depth_m_;
   rclcpp::Time depth_received_at_{0, 0, RCL_ROS_TIME};
   std::optional<Detection> buoy_;
@@ -908,10 +971,12 @@ private:
   rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr bbox_sub_;
   rclcpp::Subscription<std_msgs::msg::Float64>::SharedPtr depth_sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr depth_pose_sub_;
-  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr enable_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr vision_search_request_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr vision_control_granted_sub_;
   rclcpp::Publisher<mavros_msgs::msg::OverrideRCIn>::SharedPtr rc_pub_;
   rclcpp::Publisher<mavros_msgs::msg::OverrideRCIn>::SharedPtr rc_monitor_pub_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr state_pub_;
+  rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr target_confirmed_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
