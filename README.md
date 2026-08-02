@@ -27,30 +27,51 @@ AUV NUC
 
 <!-- [ACOUSTIC-VISION HANDSHAKE] near zone 요청 → confirm → grant, 또는 외부 강제 grant. -->
 ```text
-IDLE -> TARGET_CONFIRM -> WAIT_CONTROL_GRANT -> SEARCH/APPROACH_BUOY -> ALIGN_STICK
-     -> INSERT_FORK -> DETACH -> BACKOFF -> VERIFY_RELEASE
-     -> (성공/포기 시 SEARCH 반복)
-     -> SEARCH 타임아웃 시 AREA_VERIFY -> ASCEND -> COMPLETE
+                     buoy 안정 검출 + grant
+IDLE ─request→ TARGET_CONFIRM ─────────────────→ APPROACH_BUOY
+  │                   │ buoy 안정 검출                  │ buoy 유실
+  │ grant             └────────────→ WAIT_CONTROL_GRANT ┴──────→ SEARCH
+  └───────────────────────────────────────────────────────→ SEARCH
+                                                              │ buoy 안정 검출
+                                                              v
+                                                        APPROACH_BUOY
+                                                              │ buoy가 충분히 크고 stick 검출
+                                                              v
+                                                         ALIGN_STICK
+                                                              │ 목표점 정렬 유지
+                                                              v
+INSERT_FORK ←────────────────────────────────────────────────┘
+     │ 삽입 시간 경과 → DETACH → BACKOFF → VERIFY_RELEASE
+     │                                  │       │
+     │                                  │       ├─ buoy 미검출: SEARCH (임시 성공)
+     │                                  │       └─ buoy 잔존: 재시도 또는 SEARCH (포기)
 
-강제 인계(벽 경계 / acoustic timeout): 외부에서 grant를 주면 IDLE에서 SEARCH
-이미 가까운 buoy가 확정된 상태에서 grant를 받으면 바로 APPROACH
+SEARCH ── search_timeout_sec 경과 → AREA_VERIFY ── area_verify_sec 경과 → ASCEND → COMPLETE
+               ▲                         │ buoy 안정 검출
+               └─────────────────────────┴──────────────→ APPROACH_BUOY
+
+어느 제어 상태에서든 수심 입력 유실 또는 최대 수심 초과 → FAILSAFE
 ```
 
 수심 유실 또는 최대수심 초과 시 `FAILSAFE`로 전환하고 제어 채널을 `RELEASE`합니다.
 이 노드는 하강 단계(`DIVE`)를 수행하지 않습니다. Acoustic/상위 제어기가 near zone과 적정 수심까지 유도한 뒤 Vision에 제어권을 넘기는 구조입니다.
 
-| 상태 | 동작 요약 |
-|------|-----------|
-| IDLE | Acoustic 요청 대기. RC/RELEASE를 발행하지 않음. 외부 grant면 바로 SEARCH |
-| TARGET_CONFIRM | YOLO 가까운 buoy를 4 frame/0.3 s 확정. RC 미발행 |
-| WAIT_CONTROL_GRANT | Acoustic의 RC 종료 승인 대기. RC 미발행 |
-| SEARCH | `work_depth_m` 유지 + 제자리 yaw 회전. forward는 중립. YOLO의 가까운 buoy를 4 frame/0.3 s 확인하면 APPROACH. 40초면 AREA_VERIFY |
-| APPROACH | buoy 중앙 정렬, 전진 면적 P(1700→1560), throttle=비전+수심 블렌딩. 면적≥30%+stick → ALIGN |
-| ALIGN | stick을 포크 목표점으로 정렬(+수심 블렌딩). deadband 0.7초 → INSERT |
-| INSERT/DETACH/BACKOFF | 시간 기반 전진/후진 펄스 + 작업수심 유지 |
-| VERIFY | buoy 미검출이면 임시 성공→SEARCH, 남으면 재시도 |
-| AREA_VERIFY | 최종 재탐색 후 없으면 ASCEND |
-| ASCEND | `surface_depth_m`까지 부상 → COMPLETE |
+| 상태 | 제어 동작 | 진입 및 다음 전이 |
+|------|-----------|------------------|
+| `IDLE` | RC override를 발행하지 않고 Acoustic의 요청을 기다린다. | `/homing/vision_search_active=true` → `TARGET_CONFIRM`. 외부 `/homing/vision_control_granted=true`가 오면, 이미 안정 검출한 buoy가 있으면 `APPROACH_BUOY`, 없으면 `SEARCH`. |
+| `TARGET_CONFIRM` | RC를 발행하지 않는다. 가까운 buoy 후보의 연속 검출을 확인하고 `/vision/target_confirmed`를 발행한다. | 요청 후 `target_confirm_hits` frame이 `target_confirm_sec` 동안 유지되면 `WAIT_CONTROL_GRANT`. grant가 먼저/동시에 오고 안정 buoy가 있으면 `APPROACH_BUOY`, 없으면 `SEARCH`. |
+| `WAIT_CONTROL_GRANT` | RC를 발행하지 않고 Acoustic이 기존 제어를 해제해 Vision에 넘기기를 기다린다. | `/homing/vision_control_granted=true` → 안정 buoy가 있으면 `APPROACH_BUOY`, 없으면 `SEARCH`. |
+| `SEARCH` | `work_depth_m` 수심을 유지하고, 전진은 중립으로 둔 채 `search_yaw_pwm`으로 제자리 회전한다. | 가까운 buoy가 `target_confirm_hits` frame/`target_confirm_sec` 조건을 만족하면 `APPROACH_BUOY`. `search_timeout_sec`(기본 40초) 동안 못 찾으면 `AREA_VERIFY`. |
+| `APPROACH_BUOY` | buoy를 화면 중앙으로 yaw 정렬하며, 박스 면적이 작을수록 더 빠르게 전진한다(`approach_forward_pwm`→`approach_forward_min_pwm`). throttle은 비전 상하 오차와 작업수심 제어를 블렌딩한다. | buoy가 `detection_timeout_sec` 동안 끊기면 `SEARCH`. buoy 면적이 `approach_area_ratio` 이상이고 stick도 최근 검출되면 `ALIGN_STICK`. |
+| `ALIGN_STICK` | 전진은 중립으로 두고 stick을 `fork_target_x/y`로 yaw·throttle 정렬하며 작업수심도 유지한다. | stick이 사라지면 buoy가 남아 있으면 `APPROACH_BUOY`, 아니면 `SEARCH`. stick이 deadband 안에 `align_stable_sec` 동안 유지되면 `INSERT_FORK`. |
+| `INSERT_FORK` | 작업수심을 유지하면서 `insert_pwm` 전진 펄스를 낸다. | `insert_duration_sec` 경과 → `DETACH`. |
+| `DETACH` | 작업수심을 유지하면서 `detach_pwm` 전진 펄스로 분리를 시도한다. | `detach_duration_sec` 경과 → `BACKOFF`. |
+| `BACKOFF` | 작업수심을 유지하면서 `backoff_pwm`으로 후진해 대상에서 떨어진다. | `backoff_duration_sec` 경과 → `VERIFY_RELEASE`. |
+| `VERIFY_RELEASE` | yaw/전진은 중립, 작업수심을 유지하며 buoy가 사라졌는지 확인한다. | buoy가 `verify_clear_sec` 동안 안 보이면 **임시 성공**으로 `SEARCH`. `verify_timeout_sec` 안에 남아 있으면 최대 `max_target_retries`까지 `ALIGN_STICK` 또는 `APPROACH_BUOY` 재시도하고, 한도를 넘으면 타깃을 포기하고 `SEARCH`. |
+| `AREA_VERIFY` | SEARCH와 같이 작업수심을 유지하고 전진 중립·yaw 회전으로 마지막 재탐색을 한다. | buoy가 `min_detection_hits` 연속 검출되면 `APPROACH_BUOY`. `area_verify_sec`(기본 12초) 동안 못 찾으면 `ASCEND`. |
+| `ASCEND` | yaw/전진 중립, 양성 부력 보정 없이 `surface_depth_m`를 목표로 부상한다. | 수심이 `surface_depth_m + depth_tolerance_m` 이내 → `COMPLETE`. |
+| `COMPLETE` | throttle/yaw/forward RC override를 `RELEASE`하여 제어권을 반환한다. | 종료 상태. |
+| `FAILSAFE` | throttle/yaw/forward RC override를 즉시 `RELEASE`한다. | 수심 입력이 `depth_timeout_sec`보다 오래됐거나 수심이 `max_depth_m`를 초과하면 진입. 종료 상태. |
 
 ### 다중 부표 선택
 

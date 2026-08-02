@@ -29,6 +29,7 @@ def generate_launch_description():
             DeclareLaunchArgument("rc_override_topic", default_value="/mavros/rc/override"),
             DeclareLaunchArgument("rc_monitor_topic", default_value="/mission/rc_command"),
             DeclareLaunchArgument("control_rate_hz", default_value="20.0"),
+            DeclareLaunchArgument("detection_timeout_sec", default_value="1.2"),
             DeclareLaunchArgument("throttle_channel", default_value="3"),
             DeclareLaunchArgument("yaw_channel", default_value="4"),
             DeclareLaunchArgument("forward_channel", default_value="5"),
@@ -51,7 +52,10 @@ def generate_launch_description():
                 description="Maps to approach_forward_pwm (max approach forward).",
             ),
             DeclareLaunchArgument("approach_forward_min_pwm", default_value="1560"),
-            DeclareLaunchArgument("search_yaw_pwm", default_value="1600"),
+            DeclareLaunchArgument("search_yaw_pwm", default_value="1530"),
+            DeclareLaunchArgument("search_forward_pwm", default_value="1520"),
+            DeclareLaunchArgument("search_detection_brake_yaw_pwm", default_value="1450"),
+            DeclareLaunchArgument("search_detection_hold_sec", default_value="2.0"),
             DeclareLaunchArgument("yaw_invert", default_value="false"),
             DeclareLaunchArgument("vertical_positive_is_up", default_value="true"),
             DeclareLaunchArgument("work_depth_m", default_value="0.4"),
@@ -61,9 +65,9 @@ def generate_launch_description():
             DeclareLaunchArgument("lpf_tau_sec", default_value="0.3"),
             DeclareLaunchArgument("buoy_class_id", default_value="0"),
             DeclareLaunchArgument("stick_class_id", default_value="1"),
-            DeclareLaunchArgument("min_detection_hits", default_value="5"),
-            DeclareLaunchArgument("target_confirm_hits", default_value="4"),
-            DeclareLaunchArgument("target_confirm_sec", default_value="0.3"),
+            DeclareLaunchArgument("min_detection_hits", default_value="3"),
+            DeclareLaunchArgument("target_confirm_hits", default_value="3"),
+            DeclareLaunchArgument("target_confirm_sec", default_value="0.2"),
             DeclareLaunchArgument("approach_area_ratio", default_value="0.30"),
             DeclareLaunchArgument("approach_vision_throttle_weight", default_value="0.4"),
             DeclareLaunchArgument("fork_target_x", default_value="0.30"),
@@ -109,6 +113,9 @@ def generate_launch_description():
                         "rc_monitor_topic": LaunchConfiguration("rc_monitor_topic"),
                         "control_rate_hz": ParameterValue(
                             LaunchConfiguration("control_rate_hz"), value_type=float
+                        ),
+                        "detection_timeout_sec": ParameterValue(
+                            LaunchConfiguration("detection_timeout_sec"), value_type=float
                         ),
                         "work_depth_m": ParameterValue(
                             LaunchConfiguration("work_depth_m"), value_type=float
@@ -215,6 +222,15 @@ def generate_launch_description():
                         ),
                         "search_yaw_pwm": ParameterValue(
                             LaunchConfiguration("search_yaw_pwm"), value_type=int
+                        ),
+                        "search_forward_pwm": ParameterValue(
+                            LaunchConfiguration("search_forward_pwm"), value_type=int
+                        ),
+                        "search_detection_brake_yaw_pwm": ParameterValue(
+                            LaunchConfiguration("search_detection_brake_yaw_pwm"), value_type=int
+                        ),
+                        "search_detection_hold_sec": ParameterValue(
+                            LaunchConfiguration("search_detection_hold_sec"), value_type=float
                         ),
                         "yaw_invert": ParameterValue(
                             LaunchConfiguration("yaw_invert"), value_type=bool

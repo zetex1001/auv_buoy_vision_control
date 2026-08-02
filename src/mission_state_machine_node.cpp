@@ -54,7 +54,7 @@ public:
 
     // --- 제어 주기 / 타임아웃 / 수심 ---
     control_rate_hz_ = declare_parameter<double>("control_rate_hz", 20.0);
-    detection_timeout_sec_ = declare_parameter<double>("detection_timeout_sec", 0.7);
+    detection_timeout_sec_ = declare_parameter<double>("detection_timeout_sec", 1.2);
     depth_timeout_sec_ = declare_parameter<double>("depth_timeout_sec", 1.0);
     work_depth_m_ = declare_parameter<double>("work_depth_m", 9.5);
     surface_depth_m_ = declare_parameter<double>("surface_depth_m", 0.4);
@@ -70,9 +70,9 @@ public:
     // --- 비전 탐지 / 탐색 ---
     buoy_class_id_ = declare_parameter<int>("buoy_class_id", 0);
     stick_class_id_ = declare_parameter<int>("stick_class_id", 1);
-    min_detection_hits_ = declare_parameter<int>("min_detection_hits", 5);
-    target_confirm_hits_ = declare_parameter<int>("target_confirm_hits", 4);
-    target_confirm_sec_ = declare_parameter<double>("target_confirm_sec", 0.3);
+    min_detection_hits_ = declare_parameter<int>("min_detection_hits", 3);
+    target_confirm_hits_ = declare_parameter<int>("target_confirm_hits", 3);
+    target_confirm_sec_ = declare_parameter<double>("target_confirm_sec", 0.2);
     // bbox 면적 / 이미지 면적 비율이 이 값 이상이면 "충분히 가까움"으로 판단
     approach_area_ratio_ = declare_parameter<double>("approach_area_ratio", 0.30);
     search_timeout_sec_ = declare_parameter<double>("search_timeout_sec", 40.0);
@@ -118,7 +118,12 @@ public:
     // APPROACH/ALIGN throttle: 1=비전만, 0=수심 P만. 기본 0.4는 수심 쪽에 조금 더 무게
     approach_vision_throttle_weight_ =
       declare_parameter<double>("approach_vision_throttle_weight", 0.4);
-    search_yaw_pwm_ = declare_parameter<int>("search_yaw_pwm", 1600);
+    search_yaw_pwm_ = declare_parameter<int>("search_yaw_pwm", 1530);
+    search_forward_pwm_ = declare_parameter<int>("search_forward_pwm", 1520);
+    search_detection_brake_yaw_pwm_ =
+      declare_parameter<int>("search_detection_brake_yaw_pwm", 1450);
+    search_detection_hold_sec_ =
+      declare_parameter<double>("search_detection_hold_sec", 2.0);
     yaw_invert_ = declare_parameter<bool>("yaw_invert", false);
     // true면 throttle PWM 증가 = 상승 (일반적인 설정)
     vertical_positive_is_up_ = declare_parameter<bool>("vertical_positive_is_up", true);
@@ -247,6 +252,9 @@ private:
     }
     if (lpf_tau_sec_ < 0.0) {
       throw std::invalid_argument("lpf_tau_sec must be >= 0");
+    }
+    if (search_detection_hold_sec_ < 0.0) {
+      throw std::invalid_argument("search_detection_hold_sec must be >= 0");
     }
     if (target_confirm_hits_ < 1 || target_confirm_sec_ < 0.0)
     {
@@ -385,6 +393,12 @@ private:
   // APPROACH/ALIGN: 같은 타깃만 갱신(탐색 중 고른 부표를 유지).
   void accept_buoy_detection(Detection incoming)
   {
+    // SEARCH 중 첫 buoy 검출은 선회 관성을 한 주기 반대로 제동하고,
+    // 이후 일정 시간 동안 추가 검출을 기다린다.
+    if (state_ == State::SEARCH && !search_detection_hold_started_at_) {
+      search_detection_hold_started_at_ = now();
+      search_detection_brake_pending_ = true;
+    }
     const bool selecting =
       state_ == State::SEARCH || state_ == State::AREA_VERIFY ||
       state_ == State::IDLE || state_ == State::TARGET_CONFIRM ||
@@ -578,13 +592,28 @@ private:
     transition_to(State::APPROACH_BUOY, "stable nearest buoy confirmed");
   }
 
-  // 수심 유지 + yaw 회전 탐색. buoy 확정 시 APPROACH, 타임아웃 시 AREA_VERIFY.
+  // 수심 유지 + 완만한 전진/yaw 회전 탐색. 첫 buoy 검출은 반대 yaw 한 주기로 제동한 뒤
+  // 2초 동안 확정 검출을 기다린다. 확정 실패 시 후보를 비우고 SEARCH를 다시 시작한다.
   void run_search(std::array<uint16_t, 18> & channels)
   {
     set_neutral_control(channels);
     set_channel(channels, throttle_channel_, depth_control_pwm(work_depth_m_));
-    set_channel(channels, yaw_channel_, search_yaw_pwm_);
+    const int yaw_pwm = search_detection_brake_pending_ ?
+      search_detection_brake_yaw_pwm_ : search_yaw_pwm_;
+    set_channel(channels, yaw_channel_, yaw_pwm);
+    set_channel(channels, forward_channel_, search_forward_pwm_);
+    search_detection_brake_pending_ = false;
     run_target_confirm();
+    if (
+      state_ == State::SEARCH && search_detection_hold_started_at_ &&
+      (now() - *search_detection_hold_started_at_).seconds() >= search_detection_hold_sec_)
+    {
+      buoy_.reset();
+      stick_.reset();
+      target_confirm_started_at_.reset();
+      search_detection_hold_started_at_.reset();
+      RCLCPP_INFO(get_logger(), "Buoy was not confirmed within search detection hold; resuming search");
+    }
     if (state_ == State::SEARCH && state_age_sec() >= search_timeout_sec_) {
       transition_to(State::AREA_VERIFY, "initial search exhausted");
     }
@@ -682,6 +711,7 @@ private:
     set_neutral_control(channels);
     set_channel(channels, throttle_channel_, depth_control_pwm(work_depth_m_));
     set_channel(channels, yaw_channel_, search_yaw_pwm_);
+    set_channel(channels, forward_channel_, search_forward_pwm_);
     if (confirmed_buoy()) {
       transition_to(State::APPROACH_BUOY, "buoy found during area verification");
     } else if (state_age_sec() >= area_verify_sec_) {
@@ -813,6 +843,10 @@ private:
     state_ = next;
     state_entered_at_ = now();
     condition_started_at_.reset();
+    if (next != State::SEARCH) {
+      search_detection_hold_started_at_.reset();
+      search_detection_brake_pending_ = false;
+    }
     publish_state();
   }
 
@@ -911,7 +945,7 @@ private:
   std::string rc_override_topic_;
   std::string rc_monitor_topic_;
   double control_rate_hz_{20.0};
-  double detection_timeout_sec_{0.7};
+  double detection_timeout_sec_{1.2};
   double depth_timeout_sec_{1.0};
   double work_depth_m_{9.5};
   double surface_depth_m_{0.4};
@@ -923,9 +957,9 @@ private:
   double lpf_tau_sec_{0.3};
   int buoy_class_id_{0};
   int stick_class_id_{1};
-  int min_detection_hits_{5};
-  int target_confirm_hits_{4};
-  double target_confirm_sec_{0.3};
+  int min_detection_hits_{3};
+  int target_confirm_hits_{3};
+  double target_confirm_sec_{0.2};
   double approach_area_ratio_{0.30};
   double search_timeout_sec_{40.0};
   double area_verify_sec_{12.0};
@@ -957,7 +991,10 @@ private:
   int approach_forward_pwm_{1700};
   int approach_forward_min_pwm_{1560};
   double approach_vision_throttle_weight_{0.4};
-  int search_yaw_pwm_{1600};
+  int search_yaw_pwm_{1530};
+  int search_forward_pwm_{1520};
+  int search_detection_brake_yaw_pwm_{1450};
+  double search_detection_hold_sec_{2.0};
   bool yaw_invert_{false};
   bool vertical_positive_is_up_{true};
 
@@ -968,6 +1005,8 @@ private:
   // ALIGN deadband 유지 등 "조건 지속 시간" 측정용
   std::optional<rclcpp::Time> condition_started_at_;
   std::optional<rclcpp::Time> target_confirm_started_at_;
+  std::optional<rclcpp::Time> search_detection_hold_started_at_;
+  bool search_detection_brake_pending_{false};
   std::optional<double> depth_m_;
   rclcpp::Time depth_received_at_{0, 0, RCL_ROS_TIME};
   std::optional<Detection> buoy_;
